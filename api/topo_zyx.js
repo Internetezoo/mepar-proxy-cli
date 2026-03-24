@@ -1,4 +1,4 @@
-﻿// api/topo_zyx.js
+// api/topo_zyx.js
 // Ez a fájl fix, statikus WMTS Capabilities XML-t szolgál ki, de a Z/Y/X végpontra mutat.
 
 // KRITIKUS: A proxy szolgáltatásának saját címei
