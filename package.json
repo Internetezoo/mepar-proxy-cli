@@ -1,0 +1,11 @@
+{
+  "name": "mepar-proxy",
+  "version": "1.0.0",
+  "description": "WMTS proxy for MEPAR Kincstár",
+  "main": "index.js",
+  "dependencies": {
+    "fast-xml-parser": "^4.4.1",
+    "proj4": "^2.20.2",
+    "xml2js": "^0.6.2"
+  }
+}
