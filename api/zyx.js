@@ -1,130 +1,50 @@
-﻿const proj4 = require('proj4');
+const VERCEL_BASE_URL_ZYX = 'https://mepar-proxy-cli.vercel.app/api/zyx'; 
+const VERCEL_CAPABILITIES_URL_ZYX = 'https://mepar-proxy-cli.vercel.app/api/topo_zyx'; 
 
-// KRITIKUS FIX: EOV Definíció (pozíció fixálva)
-proj4.defs("EPSG:23700", "+proj=somerc +lat_0=47.14439372222222 +lon_0=19.04857177777778 +k=0.99993 +x_0=650000 +y_0=200000 +ellps=GRS67 +units=m +no_defs");
-
-const MEPAR_WMS_URL = 'https://mepar.mvh.allamkincstar.gov.hu/api/proxy/iier-gs/wms';
-const TARGET_CRS = 'EPSG:23700'; 
-const SOURCE_CRS = 'EPSG:3857'; 
-const INTERMEDIATE_CRS = 'EPSG:4326'; // Köztes rendszer a stabil transzformációhoz
-const TILE_SIZE = 256;
-const MAX_EXTENT = 20037508.342789244; 
-const FETCH_TIMEOUT_MS = 20000; // ✅ IDŐTÚLLÉPÉS: 20 másodpercre állítva
-
-// --- ÚJ: BEÁLLÍTOTT FEJLÉCEK ---
 const MEPAR_HEADERS = {
     "Host": "mepar.mvh.allamkincstar.gov.hu",
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-    "Accept-Language": "hu-HU,hu;q=0.9",
     "Referer": "https://mepar.mvh.allamkincstar.gov.hu/",
-    "Origin": "https://mepar.mvh.allamkincstar.gov.hu",
-    "Connection": "keep-alive",
-    "Sec-Fetch-Dest": "image",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-origin",
 };
 
-// Függvény a BBOX számításához Z/Y/X paraméterekből (EPSG:3857-re)
-function calculateBboxFromTile(zoom, row, col) {
-    const z = parseInt(zoom); 
-    const r = parseInt(row);
-    const c = parseInt(col);
-    if (isNaN(z) || isNaN(r) || isNaN(c)) return null;
-
-    const resolution = (2 * MAX_EXTENT) / (TILE_SIZE * Math.pow(2, z));
-    
-    const minX = -MAX_EXTENT + (c * TILE_SIZE * resolution);
-    const maxY = MAX_EXTENT - (r * TILE_SIZE * resolution);
-    
-    const maxX = minX + (TILE_SIZE * resolution);
-    const minY = maxY - (TILE_SIZE * resolution); 
-
-    return {
-        BBOX: `${minX},${minY},${maxX},${maxY}`,
-        CRS: SOURCE_CRS,
-        WIDTH: TILE_SIZE,
-        HEIGHT: TILE_SIZE
-    };
-}
+const STATIC_WMTS_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<Capabilities xmlns="http://www.opengis.net/wmts/1.0" xmlns:ows="http://www.opengis.net/ows/1.1" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="1.0.0" xsi:schemaLocation="http://www.opengis.net/wmts/1.0 http://schemas.opengis.net/wmts/1.0/wmtsGetCapabilities_response.xsd">
+    <ows:ServiceIdentification>
+        <ows:Title>MEPAR Topo10 Proxy Service (ZYX)</ows:Title>
+        <ows:ServiceType>OGC WMTS</ows:ServiceType>
+        <ows:ServiceTypeVersion>1.0.0</ows:ServiceTypeVersion>
+    </ows:ServiceIdentification>
+    <ows:OperationsMetadata>
+        <ows:Operation name="GetCapabilities"><ows:DCP><ows:HTTP><ows:Get xlink:href="${VERCEL_CAPABILITIES_URL_ZYX}" /></ows:HTTP></ows:DCP></ows:Operation>
+        <ows:Operation name="GetTile"><ows:DCP><ows:HTTP><ows:Get xlink:href="${VERCEL_BASE_URL_ZYX}" /></ows:HTTP></ows:DCP></ows:Operation>
+    </ows:OperationsMetadata>
+    <Contents>
+        <Layer>
+            <ows:Title>Topo 10 (ZYX)</ows:Title>
+            <ows:Identifier>iier:topo10</ows:Identifier>
+            <ows:Style isDefault="true"><ows:Identifier>raster</ows:Identifier></ows:Style>
+            <Format>image/png</Format>
+            <TileMatrixSetLink><TileMatrixSet>EPSG:3857</TileMatrixSet></TileMatrixSetLink>
+            <ResourceURL format="image/png" resourceType="tile" template="${VERCEL_BASE_URL_ZYX}?LAYER=iier:topo10&amp;FORMAT=image/png&amp;z={TileMatrix}&amp;y={TileRow}&amp;x={TileCol}"/>
+        </Layer>
+        <TileMatrixSet>
+            <ows:Identifier>EPSG:3857</ows:Identifier>
+            <ows:SupportedCRS>urn:ogc:def:crs:EPSG::3857</ows:SupportedCRS>
+            ${Array.from({ length: 19 }, (_, i) => {
+                const matrixSize = Math.pow(2, i);
+                const scaleDenominator = 5.590822640280455E8 / matrixSize;
+                return `<TileMatrix><ows:Identifier>EPSG:3857:${i}</ows:Identifier><ScaleDenominator>${scaleDenominator}</ScaleDenominator><TopLeftCorner>-20037508.342789244 20037508.342789244</TopLeftCorner><TileWidth>256</TileWidth><TileHeight>256</TileHeight><MatrixWidth>${matrixSize}</MatrixWidth><MatrixHeight>${matrixSize}</MatrixHeight></TileMatrix>`;
+            }).join('\n')}
+        </TileMatrixSet>
+    </Contents>
+</Capabilities>`;
 
 module.exports = async (req, res) => {
-    // ✅ IDŐTÚLLÉPÉS: AbortController inicializálása
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    
     try {
-        let { LAYER, FORMAT, z, y, x, REQUEST, SERVICE, VERSION } = req.query;
-        
-        let BBOX, WIDTH, HEIGHT;
-        const tileParams = calculateBboxFromTile(z, y, x);
-        if (!tileParams) {
-            return res.status(400).send('Érvénytelen z, y, vagy x paraméterek.');
-        }
-        BBOX = tileParams.BBOX;
-        WIDTH = tileParams.WIDTH;
-        HEIGHT = tileParams.HEIGHT;
-        
-        if (FORMAT && FORMAT.includes('{') && FORMAT.includes('}')) {
-            FORMAT = 'image/png'; 
-        }
-
-        const bboxParts = BBOX.split(',').map(Number);
-        const [minX_3857, minY_3857, maxX_3857, maxY_3857] = bboxParts;
-        
-        console.log(`[DEBUG] Input 3857 BBOX: ${BBOX}`);
-
-        // Láncolt Transzformáció: 3857 -> 4326 -> 23700
-        const [lonMin, latMin] = proj4(SOURCE_CRS, INTERMEDIATE_CRS, [minX_3857, minY_3857]);
-        const [lonMax, latMax] = proj4(SOURCE_CRS, INTERMEDIATE_CRS, [maxX_3857, maxY_3857]);
-        const [xMin, yMin] = proj4(INTERMEDIATE_CRS, TARGET_CRS, [lonMin, latMin]);
-        const [xMax, yMax] = proj4(INTERMEDIATE_CRS, TARGET_CRS, [lonMax, latMax]);
-        
-        const eovBBOX = `${xMin.toFixed(8)},${yMin.toFixed(8)},${xMax.toFixed(8)},${yMax.toFixed(8)}`;
-        
-        console.log(`[DEBUG] Output EOV BBOX: ${eovBBOX}`);
-
-        const wmsQueryParams = new URLSearchParams({
-            LAYERS: LAYER,
-            STYLES: 'raster', 
-            FORMAT: FORMAT || 'image/png', 
-            TRANSPARENT: true,
-            SERVICE: SERVICE || 'WMS',
-            VERSION: '1.1.1', 
-            REQUEST: REQUEST || 'GetMap',
-            SRS: TARGET_CRS, 
-            BBOX: eovBBOX, 
-            WIDTH: WIDTH || 256,
-            HEIGHT: HEIGHT || 256,
-        });
-
-        const targetUrl = `${MEPAR_WMS_URL}?${wmsQueryParams.toString()}`;
-        console.log(`[DEBUG] GeoServer URL: ${targetUrl}`);
-
-        // --- FETCH HÍVÁS A FEJLÉCEKKEL ---
-        const proxyResponse = await fetch(targetUrl, { 
-            signal: controller.signal,
-            headers: MEPAR_HEADERS
-        });
-
-        if (!proxyResponse.ok) {
-            const errorBody = await proxyResponse.text();
-            console.error(`GeoServer WMS Hiba: ${proxyResponse.status}`);
-            return res.status(proxyResponse.status).send(`GeoServer Hiba: ${errorBody.substring(0, 500)}`);
-        }
-
-        res.setHeader('Content-Type', proxyResponse.headers.get('Content-Type') || 'image/png');
-        res.setHeader('Cache-Control', 'public, max-age=604800'); 
-        
-        const buffer = await proxyResponse.arrayBuffer();
-        res.status(200).send(Buffer.from(buffer));
-        
+        let finalXml = STATIC_WMTS_XML.replace(/<script[^>]*\/>/g, '').replace(/<script[^>]*>[\s\S]*?<\/script>/g, '').trim();
+        res.setHeader('Content-Type', 'application/xml');
+        res.status(200).send(finalXml);
     } catch (error) {
-        if (error.name === 'AbortError') {
-            return res.status(504).send(`KRITIKUS HIBA (504 Timeout): ${FETCH_TIMEOUT_MS}ms`);
-        }
-        res.status(500).send(`KRITIKUS HIBA: ${error.message}`);
-    } finally {
-        clearTimeout(timeoutId); 
+        res.status(500).send(`Hiba: ${error.message}`);
     }
 };
