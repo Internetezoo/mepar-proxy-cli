@@ -1,4 +1,4 @@
-﻿const proj4 = require('proj4');
+const proj4 = require('proj4');
 
 // EOV (EPSG:23700) DEFINÍCIÓ (+towgs84 nélkül a stabil illeszkedésért)
 proj4.defs("EPSG:23700", "+proj=somerc +lat_0=47.14439372222222 +lon_0=19.04857177777778 +k=0.99993 +x_0=650000 +y_0=200000 +ellps=GRS67 +units=m +no_defs");
@@ -49,16 +49,18 @@ module.exports = async (req, res) => {
         // 4. FÁZIS: WMS URL felépítése (WMS 1.1.0 verzióval és SRS-szel!)
         const targetUrl = `${HRSZ_WMS_URL}?service=WMS&request=GetMap&version=1.1.0&layers=${LAYER}&styles=&srs=${TARGET_CRS}&bbox=${final_bbox}&width=${TILE_SIZE}&height=${TILE_SIZE}&format=${FORMAT}&transparent=true`;
         
-        // 5. FÁZIS: Kérés továbbítása
-        const proxyResponse = await fetch(targetUrl, { signal: controller.signal });
-
-        if (!proxyResponse.ok) {
-            // ... hiba kezelés ...
-            const errorBody = await proxyResponse.text();
-            console.error(`HRSZ WMS Hiba: ${proxyResponse.status} - Válasz: ${errorBody}`);
-
-            return res.status(proxyResponse.status).send(`HRSZ WMS Hiba (${proxyResponse.status}): ${proxyResponse.statusText}. Részletek: ${errorBody.substring(0, 500)}`);
-        }
+        // 5. FÁZIS: Kérés továbbítása megfelelő fejlécekkel
+        const proxyResponse = await fetch(targetUrl, { 
+            signal: controller.signal,
+            headers: {
+                // Egy böngészőt imitáló User-Agent gyakran szükséges a tiltás elkerüléséhez
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                // A Referer azt mutatja, honnan érkezik a kérés (érdemes az oeny.hu-t vagy a saját domainet megadni)
+                'Referer': 'https://www.oeny.hu/',
+                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                'Accept-Language': 'hu-HU,hu;q=0.9,en-US;q=0.8,en;q=0.7',
+            }
+        });
 
         // ... 6. FÁZIS: Csempe visszaküldése ...
         res.setHeader('Content-Type', proxyResponse.headers.get('Content-Type') || 'image/png');
