@@ -37,14 +37,14 @@
         maxZoom: 20
     }).addTo(map);
 
-    // 3. MEPAR RÉTEG (Fizikai blokkok)
+    // 3. MEPAR RÉTEG
     const meparLayer = L.tileLayer(`${PROXY}/tiles?LAYER=iier:fizikai_blokk&FORMAT=image/png&TileMatrixSet=EPSG:3857&TileMatrix={z}&TileRow={y}&TileCol={x}`, {
         opacity: 0.6,
         zIndex: 200,
         attribution: 'MEPAR'
     });
 
-    // 4. NTA RÉTEG (Erdészet)
+    // 4. NTA RÉTEG
     const ntaLayer = L.tileLayer(`${PROXY}/nta?z={z}&x={x}&y={y}`, {
         minZoom: 10,
         opacity: 0.7,
@@ -52,7 +52,7 @@
         attribution: 'NTA'
     }).addTo(map);
 
-    // 5. HRSZ + TELEKHATÁR (Csak közelről!)
+    // 5. HRSZ + TELEKHATÁR
     const hrszLayer = L.tileLayer(`${PROXY}/hrsz?z={z}&x={x}&y={y}&LAYER=hrsz`, {
         minZoom: 15, // Kritikus: 15 alatt az OÉNY nem küld adatot
         maxZoom: 18,
