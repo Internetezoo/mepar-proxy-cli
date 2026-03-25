@@ -1,75 +1,79 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>HRSZ és NTA - Szürke Alaptérkép</title>
+    <title>Kombinált MEPAR, NTA és HRSZ Térkép</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
     <style>
         body { margin: 0; padding: 0; }
         #map { width: 100%; height: 100vh; background: #e0e0e0; }
-        .zoom-warning {
-            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
-            z-index: 1000; background: rgba(0,0,0,0.7); color: white;
-            padding: 8px 15px; border-radius: 20px; font-family: sans-serif;
-            font-size: 13px; pointer-events: none; display: none;
+        
+        /* Infó panel a zoom szint követéséhez */
+        .zoom-indicator {
+            position: absolute; bottom: 30px; left: 10px; z-index: 1000;
+            background: rgba(255,255,255,0.8); padding: 5px 10px;
+            border-radius: 4px; font-family: monospace; font-size: 12px;
+            border: 1px solid #999;
         }
     </style>
 </head>
 <body>
 
-<div id="zoom-notice" class="zoom-warning">Görgessen közelebb a telekhatárokhoz!</div>
 <div id="map"></div>
+<div class="zoom-indicator">Zoom: <span id="z-val">12</span></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
     const PROXY = 'https://mepar-proxy-cli.vercel.app/api';
 
-    // Térkép inicializálása
-    const map = L.map('map').setView([47.4979, 19.0402], 12);
+    // 1. Térkép alapbeállítása
+    const map = L.map('map').setView([47.16, 19.50], 12);
 
-    // 1. CARTO SZÜRKE ALAPTÉRKÉP (Positron)
+    // 2. ALAPRÉTEG: CartoDB Positron (Szürke)
     const cartoLight = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; OpenStreetMap &copy; CARTO',
+        attribution: '&copy; CARTO',
         subdomains: 'abcd',
         maxZoom: 20
     }).addTo(map);
 
-    // 2. HRSZ + TELEKHATÁR (Csak 15-ös zoomtól!)
+    // 3. MEPAR RÉTEG (Fizikai blokkok)
+    const meparLayer = L.tileLayer(`${PROXY}/tiles?LAYER=iier:fizikai_blokk&FORMAT=image/png&TileMatrixSet=EPSG:3857&TileMatrix={z}&TileRow={y}&TileCol={x}`, {
+        opacity: 0.6,
+        zIndex: 200,
+        attribution: 'MEPAR'
+    });
+
+    // 4. NTA RÉTEG (Erdészet)
+    const ntaLayer = L.tileLayer(`${PROXY}/nta?z={z}&x={x}&y={y}`, {
+        minZoom: 10,
+        opacity: 0.7,
+        zIndex: 300,
+        attribution: 'NTA'
+    }).addTo(map);
+
+    // 5. HRSZ + TELEKHATÁR (Csak közelről!)
     const hrszLayer = L.tileLayer(`${PROXY}/hrsz?z={z}&x={x}&y={y}&LAYER=hrsz`, {
-        minZoom: 15,      // Még közelebb tettem a korlátot (15), hogy ne legyen üres kép
+        minZoom: 15, // Kritikus: 15 alatt az OÉNY nem küld adatot
         maxZoom: 18,
         transparent: true,
         format: 'image/png',
-        zIndex: 1000
+        zIndex: 1000 // Ez legyen legfelül a vonalak miatt
     }).addTo(map);
 
-    // 3. NTA (Erdészet) - Ez távolabbról is látszik
-    const ntaLayer = L.tileLayer(`${PROXY}/nta?z={z}&x={x}&y={y}`, {
-        minZoom: 10,
-        maxZoom: 18,
-        transparent: true,
-        opacity: 0.5,
-        zIndex: 500
-    }).addTo(map);
-
-    // Zoom figyelmeztetés kezelése
-    const zoomNotice = document.getElementById('zoom-notice');
-    map.on('zoomend', function() {
-        if (map.getZoom() < 15) {
-            zoomNotice.style.display = 'block';
-        } else {
-            zoomNotice.style.display = 'none';
-        }
-    });
-
-    // Rétegkezelő (opcionális, ha váltani akarsz)
-    const overlays = { 
-        "Telekhatárok (HRSZ)": hrszLayer, 
-        "Erdészeti (NTA)": ntaLayer 
+    // 6. RÉTEGKEZELŐ
+    const overlays = {
+        "<b>Telekhatár + HRSZ</b> (z15+)": hrszLayer,
+        "<span style='color: green;'>Erdészet (NTA)</span>": ntaLayer,
+        "<span style='color: blue;'>MEPAR Blokkok</span>": meparLayer
     };
+
     L.control.layers(null, overlays, { collapsed: false }).addTo(map);
 
+    // Zoom kijelző frissítése
+    map.on('zoomend', () => {
+        document.getElementById('z-val').innerText = map.getZoom();
+    });
 </script>
 </body>
 </html>
