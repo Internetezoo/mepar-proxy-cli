@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Kombinált MEPAR, NTA és HRSZ Térkép</title>
+    <title>Carto + MEPAR + NTA + HRSZ</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -9,70 +9,86 @@
         body { margin: 0; padding: 0; }
         #map { width: 100%; height: 100vh; background: #e0e0e0; }
         
-        /* Infó panel a zoom szint követéséhez */
-        .zoom-indicator {
-            position: absolute; bottom: 30px; left: 10px; z-index: 1000;
-            background: rgba(255,255,255,0.8); padding: 5px 10px;
-            border-radius: 4px; font-family: monospace; font-size: 12px;
-            border: 1px solid #999;
+        /* Zoom kijelző és figyelmeztetés */
+        .map-overlay {
+            position: absolute; bottom: 20px; left: 10px; z-index: 1000;
+            background: rgba(255,255,255,0.9); padding: 8px 12px;
+            border-radius: 5px; font-family: sans-serif; font-size: 12px;
+            border: 1px solid #ccc; box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
+        .hrsz-alert { color: #d32f2f; font-weight: bold; display: block; margin-top: 4px; }
     </style>
 </head>
 <body>
 
 <div id="map"></div>
-<div class="zoom-indicator">Zoom: <span id="z-val">12</span></div>
+<div class="map-overlay">
+    Zoom szint: <span id="zoom-level">12</span>
+    <span id="hrsz-info" class="hrsz-alert">← Telekhatárhoz közelítsen (z15)!</span>
+</div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
     const PROXY = 'https://mepar-proxy-cli.vercel.app/api';
 
-    // 1. Térkép alapbeállítása
+    // 1. Térkép inicializálása (Középpont: Magyarország)
     const map = L.map('map').setView([47.16, 19.50], 12);
 
-    // 2. ALAPRÉTEG: CartoDB Positron (Szürke)
-    const cartoLight = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    // 2. FIX ALAPRÉTEG: CartoDB Positron (Világosszürke)
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
         attribution: '&copy; CARTO',
         subdomains: 'abcd',
         maxZoom: 20
     }).addTo(map);
 
-    // 3. MEPAR RÉTEG
+    // 3. MEPAR RÉTEG (Fizikai blokkok)
     const meparLayer = L.tileLayer(`${PROXY}/tiles?LAYER=iier:fizikai_blokk&FORMAT=image/png&TileMatrixSet=EPSG:3857&TileMatrix={z}&TileRow={y}&TileCol={x}`, {
-        opacity: 0.6,
+        opacity: 0.5,
         zIndex: 200,
         attribution: 'MEPAR'
     });
 
-    // 4. NTA RÉTEG
+    // 4. NTA RÉTEG (Erdészet)
     const ntaLayer = L.tileLayer(`${PROXY}/nta?z={z}&x={x}&y={y}`, {
-        minZoom: 10,
+        minZoom: 9,
         opacity: 0.7,
         zIndex: 300,
         attribution: 'NTA'
-    }).addTo(map);
+    }).addTo(map); // Alapértelmezetten bekapcsolva
 
-    // 5. HRSZ + TELEKHATÁR
+    // 5. HRSZ + TELEKHATÁR (Csak z15 felett!)
     const hrszLayer = L.tileLayer(`${PROXY}/hrsz?z={z}&x={x}&y={y}&LAYER=hrsz`, {
-        minZoom: 15, // Kritikus: 15 alatt az OÉNY nem küld adatot
+        minZoom: 15,
         maxZoom: 18,
         transparent: true,
         format: 'image/png',
-        zIndex: 1000 // Ez legyen legfelül a vonalak miatt
-    }).addTo(map);
+        zIndex: 1000
+    }).addTo(map); // Alapértelmezetten bekapcsolva
 
-    // 6. RÉTEGKEZELŐ
+    // 6. RÉTEGKEZELŐ (Ki-be kapcsolható menü)
     const overlays = {
-        "<b>Telekhatár + HRSZ</b> (z15+)": hrszLayer,
-        "<span style='color: green;'>Erdészet (NTA)</span>": ntaLayer,
-        "<span style='color: blue;'>MEPAR Blokkok</span>": meparLayer
+        "<b style='color: #d32f2f;'>Telekhatár + HRSZ (z15+)</b>": hrszLayer,
+        "<b style='color: #2d5a27;'>Erdészet (NTA)</b>": ntaLayer,
+        "<b style='color: #1976d2;'>MEPAR Blokkok</b>": meparLayer
     };
 
+    // A "null" az első paraméternél azt jelenti, hogy az alaptérkép nem váltható (fix)
     L.control.layers(null, overlays, { collapsed: false }).addTo(map);
 
-    // Zoom kijelző frissítése
+    // 7. DINAMIKUS INFO PANEL KEZELÉSE
+    const zoomVal = document.getElementById('zoom-level');
+    const hrszInfo = document.getElementById('hrsz-info');
+
     map.on('zoomend', () => {
-        document.getElementById('z-val').innerText = map.getZoom();
+        const currentZoom = map.getZoom();
+        zoomVal.innerText = currentZoom;
+        
+        // Ha elég közel vagyunk, eltüntetjük a figyelmeztetést
+        if (currentZoom >= 15) {
+            hrszInfo.style.display = 'none';
+        } else {
+            hrszInfo.style.display = 'block';
+        }
     });
 </script>
 </body>
