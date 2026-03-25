@@ -1,115 +1,82 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>MEPAR, NTA és HRSZ Proxy Teszt - Összesített</title>
+    <title>MEPAR, NTA és HRSZ - Chrome Optimalizált</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-    
     <style>
-        body { margin: 0; padding: 0; font-family: sans-serif; }
-        #map { width: 100%; height: 100vh; }
-        
-        .map-info {
-            position: absolute;
-            top: 10px;
-            right: 10px; 
-            padding: 10px;
-            background: rgba(255, 255, 255, 0.9);
-            border: 2px solid #333;
-            border-radius: 8px;
-            z-index: 1000;
-            font-size: 13px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        body { margin: 0; padding: 0; }
+        #map { width: 100%; height: 100vh; background: #f0f0f0; }
+        .info-panel {
+            position: absolute; top: 10px; right: 10px; z-index: 1000;
+            background: white; padding: 10px; border-radius: 5px; border: 1px solid #ccc;
+            font-family: Arial; font-size: 12px;
         }
     </style>
 </head>
 <body>
 
-<div id="map-info" class="map-info">
-    <strong>Koordináták & Zoom</strong><br>
-    Zoom szint: <span id="current-zoom">11</span><br>
-    WGS84: <span id="center-coords"></span>
+<div class="info-panel">
+    <b>Zoom:</b> <span id="z"></span> | <b>Lat:</b> <span id="lat"></span> | <b>Lng:</b> <span id="lng"></span>
 </div>
-
 <div id="map"></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
 <script>
-    // --- KONFIGURÁCIÓ ---
-    const BASE_PROXY_URL = 'https://mepar-proxy-cli.vercel.app/api';
+    const PROXY = 'https://mepar-proxy-cli.vercel.app/api';
 
-    // 1. Térkép inicializálása
-    const map = L.map('map', {
-        center: [46.85, 17.85], // Balaton
-        zoom: 11,
-        maxZoom: 18
-    });
+    // 1. Térkép alaphelyzete (z=15-nél már látszanak a HRSZ-ek)
+    const map = L.map('map').setView([47.4979, 19.0402], 15);
 
     // 2. ALAPRÉTEGEK
-    const cartoDb = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; CARTO'
+    const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+    const googleSat = L.tileLayer('http://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
+        subdomains:['mt0','mt1','mt2','mt3']
+    });
+
+    // 3. ÁTLÁTSZÓ OVERLAY RÉTEGEK
+    
+    // HRSZ + Telekhatár (Átlátszó PNG)
+    const hrszLayer = L.tileLayer(`${PROXY}/hrsz?z={z}&x={x}&y={y}&LAYER=hrsz`, {
+        maxZoom: 18,
+        minZoom: 14,
+        transparent: true,
+        format: 'image/png',
+        opacity: 1.0, // A vonalak legyenek élesek
+        zIndex: 1000  // Ez biztosítja, hogy felül legyen
     }).addTo(map);
 
-    const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap'
+    // NTA (Erdészeti réteg)
+    const ntaLayer = L.tileLayer(`${PROXY}/nta?z={z}&x={x}&y={y}`, {
+        maxZoom: 18,
+        minZoom: 10,
+        transparent: true,
+        opacity: 0.6, // Hogy látszódjon alatta a műholdkép
+        zIndex: 500
     });
 
-    // 3. PROXY RÉTEGEK (Overlay)
-    
-    // MEPAR Topo10
-    const topo10Layer = L.tileLayer(`${BASE_PROXY_URL}/tiles?LAYER=iier:topo10&FORMAT=image/png&TileMatrixSet=EPSG:3857&TileMatrix={z}&TileRow={y}&TileCol={x}`, {
-        opacity: 0.8,
-        attribution: 'MEPAR Topo10'
-    });
-
-    // Erdészeti (NTA)
-    const ntaLayer = L.tileLayer(`${BASE_PROXY_URL}/nta?z={z}&x={x}&y={y}`, {
+    // MEPAR Topo
+    const topoLayer = L.tileLayer(`${PROXY}/tiles?LAYER=iier:topo10&FORMAT=image/png&TileMatrixSet=EPSG:3857&TileMatrix={z}&TileRow={y}&TileCol={x}`, {
         opacity: 0.7,
-        attribution: 'FÖMI NTA'
+        zIndex: 100
     });
 
-    // Helyrajzi Számok (HRSZ / Telekhatár)
-    // Megjegyzés: A LAYER paramétert az oeny.hu alapján érdemes finomhangolni, itt az alapértelmezett 'hrsz'
-    const hrszLayer = L.tileLayer(`${BASE_PROXY_URL}/hrsz?z={z}&x={x}&y={y}&LAYER=hrsz`, {
-        opacity: 0.9,
-        attribution: 'OÉNY HRSZ'
-    });
-
-    // 4. RÉTEGKEZELŐ (Layer Control)
-    const baseMaps = {
-        "Világos (CartoDB)": cartoDb,
-        "OpenStreetMap": osm
+    // 4. RÉTEGKEZELŐ
+    const baseMaps = { "Térkép (OSM)": osm, "Műhold (Google)": googleSat };
+    const overlays = { 
+        "<b>Telekhatárok (HRSZ)</b>": hrszLayer, 
+        "Erdészeti (NTA)": ntaLayer,
+        "MEPAR Topo": topoLayer 
     };
+    L.control.layers(baseMaps, overlays, { collapsed: false }).addTo(map);
 
-    const overlayMaps = {
-        "<b>MEPAR Topo10</b>": topo10Layer,
-        "<span style='color: green'>Erdészeti (NTA)</span>": ntaLayer,
-        "<span style='color: red'>Telekhatárok (HRSZ)</span>": hrszLayer
-    };
-
-    L.control.layers(baseMaps, overlayMaps, { collapsed: false }).addTo(map);
-
-    // 5. INFÓ panel frissítése
-    const zoomEl = document.getElementById('current-zoom');
-    const centerEl = document.getElementById('center-coords');
-
-    function updateInfo() {
-        zoomEl.textContent = map.getZoom();
-        const center = map.getCenter();
-        centerEl.textContent = `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)}`;
-    }
-
-    map.on('moveend zoomend', updateInfo);
-    updateInfo();
-
-    // Hibakezelés a konzolba
-    [topo10Layer, ntaLayer, hrszLayer].forEach(layer => {
-        layer.on('tileerror', (e) => console.warn('Csempe betöltési hiba:', e.url));
+    // Infó panel frissítése
+    map.on('move', function() {
+        document.getElementById('z').innerHTML = map.getZoom();
+        document.getElementById('lat').innerHTML = map.getCenter().lat.toFixed(5);
+        document.getElementById('lng').innerHTML = map.getCenter().lng.toFixed(5);
     });
-
 </script>
 </body>
 </html>
