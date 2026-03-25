@@ -52,19 +52,19 @@
     }); // Alapértelmezett kikapcsolva
 
     // 5. HRSZ + TELEKHATÁR (Kritikus beállítások)
-    const hrszLayer = L.tileLayer(`${PROXY}/hrsz?z={z}&x={x}&y={y}&LAYER=hrsz`, {
-        minZoom: 15,       // Ennél kisebb zoomnál a szerver nem válaszol!
-        maxZoom: 18,
-        transparent: true,
-        format: 'image/png',
-        zIndex: 1000       // Kényszerítve a legtetejére
-    }).addTo(map); // Alapértelmezett bekapcsolva
+    const hrszLayer = L.tileLayer(`${PROXY}/hrsz?z={z}&x={x}&y={y}&LAYER=hrsz:foldreszlet,hrsz:felirat_kat`, {
+    minZoom: 15,
+    maxZoom: 18,
+    transparent: true,
+    format: 'image/png',
+    zIndex: 1000
+}).addTo(map);
 
     // 6. RÉTEGKEZELŐ (Minden réteg ki-be kapcsolható)
     const overlays = {
         "<b style='color: #d32f2f;'>Telekhatár + HRSZ (z15+)</b>": hrszLayer,
-        "<b style='color: #2d5a27;'>NTA Adatok</b>": ntaLayer,
-        "<b style='color: #1976d2;'>MEPAR (Topo)</b>": meparLayer
+        "<b style='color: #2d5a27;'>NTA</b>": ntaLayer,
+        "<b style='color: #1976d2;'>MEPAR</b>": meparLayer
     };
 
     // A rétegkezelő panel fixen nyitva marad (collapsed: false)
