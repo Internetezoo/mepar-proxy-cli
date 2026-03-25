@@ -1,4 +1,4 @@
-﻿const proj4 = require('proj4');
+const proj4 = require('proj4');
 
 // EOV (EPSG:23700) DEFINÍCIÓ (+towgs84 nélkül a stabil illeszkedésért)
 proj4.defs("EPSG:23700", "+proj=somerc +lat_0=47.14439372222222 +lon_0=19.04857177777778 +k=0.99993 +x_0=650000 +y_0=200000 +ellps=GRS67 +units=m +no_defs");
@@ -56,15 +56,18 @@ module.exports = async (req, res) => {
         // 4. FÁZIS: WMS URL felépítése
         const targetUrl = `${NTA_WMS_URL}?service=WMS&request=GetMap&version=1.3.0&layers=${NTA_LAYER}&styles=&crs=${TARGET_CRS}&bbox=${final_bbox}&width=${TILE_SIZE}&height=${TILE_SIZE}&format=${FORMAT}&transparent=true`;
         
-        // 5. FÁZIS: Kérés továbbítása a FÖMI WMS szerverének
-        const proxyResponse = await fetch(targetUrl, { signal: controller.signal });
-
-        if (!proxyResponse.ok) {
-            const errorBody = await proxyResponse.text();
-            console.error(`NTA WMS Hiba: ${proxyResponse.status} - Válasz: ${errorBody}`);
-
-            return res.status(proxyResponse.status).send(`NTA WMS Hiba (${proxyResponse.status}): ${proxyResponse.statusText}. Részletek: ${errorBody.substring(0, 500)}`);
-        }
+        // 5. FÁZIS: Kérés továbbítása a FÖMI szerver felé
+        const proxyResponse = await fetch(targetUrl, { 
+            signal: controller.signal,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                // A FÖMI saját térképi portáljára vagy aldomainjére hivatkozunk
+                'Referer': 'http://tkp.fomi.hu/mapservice/nta/', 
+                'Origin': 'http://tkp.fomi.hu',
+                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                'Connection': 'keep-alive'
+            }
+        });
 
         // 6. FÁZIS: Csempe visszaküldése
         res.setHeader('Content-Type', proxyResponse.headers.get('Content-Type') || 'image/png');
