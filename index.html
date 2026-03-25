@@ -43,7 +43,7 @@
         minZoom: 8,
         opacity: 0.8,
         zIndex: 300
-    }).addTo(map); // Alapértelmezett bekapcsolva
+    });
 
     // 4. MEPAR
     const meparLayer = L.tileLayer(`${PROXY}/tiles?LAYER=iier:topo10&FORMAT=image/png&TileMatrixSet=EPSG:3857&TileMatrix={z}&TileRow={y}&TileCol={x}`, {
@@ -58,7 +58,7 @@
     transparent: true,
     format: 'image/png',
     zIndex: 1000
-}).addTo(map);
+});
 
     // 6. RÉTEGKEZELŐ (Minden réteg ki-be kapcsolható)
     const overlays = {
