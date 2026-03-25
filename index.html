@@ -15,67 +15,75 @@
             border-radius: 5px; font-family: sans-serif; font-size: 12px;
             border: 1px solid #ccc;
         }
-        .warning { color: #d32f2f; font-weight: bold; }
+        .warning { color: #d32f2f; font-weight: bold; margin-top: 5px; }
     </style>
 </head>
 <body>
 
 <div id="map"></div>
 <div class="map-overlay">
-    Zoom: <span id="zoom-level">12</span>
-    <div id="hrsz-warn" class="warning">Telekhatárhoz nagyítson (z15+)!</div>
+    <b>Aktuális Zoom:</b> <span id="zoom-level">12</span>
+    <div id="hrsz-warn" class="warning">HRSZ: Nagyítson z15 szintig!</div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
     const PROXY = 'https://mepar-proxy-cli.vercel.app/api';
 
+    // 1. Térkép inicializálása
     const map = L.map('map').setView([47.16, 19.50], 12);
 
-    // FIX ALAP: CartoDB Szürke
+    // 2. FIX ALAP: CartoDB Szürke (Positron)
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
         attribution: '&copy; CARTO'
     }).addTo(map);
 
-    // 1. NTA RÉTEG (Hivatalos állami alapadatok)
+    // 3. NTA
     const ntaLayer = L.tileLayer(`${PROXY}/nta?z={z}&x={x}&y={y}`, {
         minZoom: 8,
         opacity: 0.8,
-        zIndex: 300,
-        attribution: 'NTA'
-    }).addTo(map);
+        zIndex: 300
+    }).addTo(map); // Alapértelmezett bekapcsolva
 
-    // 2. MEPAR RÉTEG (Blokkok és Topo)
-    // Megjegyzés: Ha a fizikai_blokk nem jön be, a topo10-et használjuk alapértelmezettnek
+    // 4. MEPAR
     const meparLayer = L.tileLayer(`${PROXY}/tiles?LAYER=iier:topo10&FORMAT=image/png&TileMatrixSet=EPSG:3857&TileMatrix={z}&TileRow={y}&TileCol={x}`, {
         opacity: 0.6,
-        zIndex: 200,
-        attribution: 'MEPAR'
-    });
+        zIndex: 200
+    }); // Alapértelmezett kikapcsolva
 
-    // 3. HRSZ + TELEKHATÁR
+    // 5. HRSZ + TELEKHATÁR (Kritikus beállítások)
     const hrszLayer = L.tileLayer(`${PROXY}/hrsz?z={z}&x={x}&y={y}&LAYER=hrsz`, {
-        minZoom: 15,
+        minZoom: 15,       // Ennél kisebb zoomnál a szerver nem válaszol!
         maxZoom: 18,
         transparent: true,
         format: 'image/png',
-        zIndex: 1000
-    }).addTo(map);
+        zIndex: 1000       // Kényszerítve a legtetejére
+    }).addTo(map); // Alapértelmezett bekapcsolva
 
-    // RÉTEGKEZELŐ (Csak az overlay-ek)
+    // 6. RÉTEGKEZELŐ (Minden réteg ki-be kapcsolható)
     const overlays = {
         "<b style='color: #d32f2f;'>Telekhatár + HRSZ (z15+)</b>": hrszLayer,
-        "<b style='color: #2d5a27;'>NTA Alapadatok</b>": ntaLayer,
+        "<b style='color: #2d5a27;'>NTA Adatok</b>": ntaLayer,
         "<b style='color: #1976d2;'>MEPAR (Topo)</b>": meparLayer
     };
 
+    // A rétegkezelő panel fixen nyitva marad (collapsed: false)
     L.control.layers(null, overlays, { collapsed: false }).addTo(map);
 
-    // Zoom figyelés
+    // Zoom figyelő és segítő szöveg
     map.on('zoomend', () => {
         const z = map.getZoom();
         document.getElementById('zoom-level').innerText = z;
-        document.getElementById('hrsz-warn').style.display = (z >= 15) ? 'none' : 'block';
+        
+        // Ha z15 alatt vagyunk, jelezzük, hogy a HRSZ nem fog látszani
+        const warn = document.getElementById('hrsz-warn');
+        if (z < 15) {
+            warn.innerText = "HRSZ: Nagyítson z15 szintig!";
+            warn.style.color = "#d32f2f";
+        } else {
+            warn.innerText = "HRSZ Aktív";
+            warn.style.color = "#388e3c";
+        }
     });
 </script>
 </body>
