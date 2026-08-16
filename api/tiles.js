@@ -1,7 +1,13 @@
 const proj4 = require('proj4');
+const { Agent } = require('undici');
 
 // KRITIKUS: A HIVATALOS EOV (EPSG:23700) DEFINÍCIÓ
 proj4.defs("EPSG:23700", "+proj=somerc +lat_0=47.14439372222222 +lon_0=19.04857177777778 +k=0.99993 +x_0=650000 +y_0=200000 +ellps=GRS67 +towgs84=52.17,-71.82,-14.9,0.0,0.0,0.0,0.0 +units=m +no_defs");
+
+// Egyedi Agent a hálózati kapcsolat felépítési idejének növelésére (30 másodperc)
+const dispatcher = new Agent({
+    connectTimeout: 30000
+});
 
 const MEPAR_WMS_URL = 'https://mepar.mvh.allamkincstar.gov.hu/api/proxy/iier-gs/wms';
 const TARGET_CRS = 'EPSG:23700'; 
@@ -131,10 +137,11 @@ module.exports = async (req, res) => {
         const targetUrl = `${MEPAR_WMS_URL}?${wmsQueryParams.toString()}`;
         console.log(`[DEBUG] GeoServer URL: ${targetUrl}`);
 
-        // 5. Lekérés a GeoServer-től fejlécekkel és szignállal
+        // 5. Lekérés a GeoServer-től fejlécekkel, szignállal és a megnövelt connect timeout-ú dispatcherrel
         const proxyResponse = await fetch(targetUrl, { 
             headers: headers,
-            signal: controller.signal 
+            signal: controller.signal,
+            dispatcher: dispatcher // 🔑 ITT ADJUK ÁT A DISPATCHER-T
         });
 
         if (!proxyResponse.ok) {
