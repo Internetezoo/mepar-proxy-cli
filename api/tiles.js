@@ -7,7 +7,7 @@ const MEPAR_WMS_URL = 'https://mepar.mvh.allamkincstar.gov.hu/api/proxy/iier-gs/
 const TARGET_CRS = 'EPSG:23700'; 
 const TILE_SIZE = 256;
 const MAX_EXTENT = 20037508.342789244; // Fél világkiterjedés
-const FETCH_TIMEOUT_MS = 20000; // 20 másodpercre emelve az időtúllépést
+const FETCH_TIMEOUT_MS = 40000; // 40 másodpercre emelve az időtúllépést
 
 /**
  * Függvény a BBOX számításához WMTS csempeparaméterekből (EPSG:3857-re)
