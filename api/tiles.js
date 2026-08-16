@@ -39,6 +39,9 @@ function calculateBboxFromTile(matrixId, tileRow, tileCol) {
 }
 
 module.exports = async (req, res) => {
+    let timeoutId;
+    const controller = new AbortController();
+    
     try {
         let { LAYER, FORMAT, BBOX, WIDTH, HEIGHT, REQUEST, SERVICE, VERSION, CRS } = req.query;
         const { TileMatrix, TileRow, TileCol, TileMatrixSet } = req.query;
@@ -112,7 +115,14 @@ module.exports = async (req, res) => {
 
         const targetUrl = `${MEPAR_WMS_URL}?${wmsQueryParams.toString()}`;
 
-        const proxyResponse = await fetch(targetUrl, { headers });
+        // 35 másodperces időtúllépés engedélyezése
+        timeoutId = setTimeout(() => controller.abort(), 35000);
+
+        const proxyResponse = await fetch(targetUrl, { 
+            headers, 
+            signal: controller.signal 
+        });
+        clearTimeout(timeoutId);
 
         if (!proxyResponse.ok) {
             const errorBody = await proxyResponse.text();
@@ -129,7 +139,12 @@ module.exports = async (req, res) => {
         res.status(200).send(imageBuffer);
         
     } catch (error) {
+        if (timeoutId) clearTimeout(timeoutId);
         console.error('[FATAL ERROR]:', error);
+        
+        if (error.name === 'AbortError') {
+            return res.status(504).send('Időtúllépés: A Kincstár szervere nem válaszolt 35 másodpercen belül.');
+        }
         res.status(500).send(`Szerver hiba: ${error.message}`);
     }
 };
