@@ -1,20 +1,20 @@
 const proj4 = require('proj4');
-const { Agent } = require('undici');
+const { SocksProxyAgent } = require('socks-proxy-agent');
+const fetch = require('node-fetch');
 
 // KRITIKUS: A HIVATALOS EOV (EPSG:23700) DEFINÍCIÓ
 proj4.defs("EPSG:23700", "+proj=somerc +lat_0=47.14439372222222 +lon_0=19.04857177777778 +k=0.99993 +x_0=650000 +y_0=200000 +ellps=GRS67 +towgs84=52.17,-71.82,-14.9,0.0,0.0,0.0,0.0 +units=m +no_defs");
-
-// Egyedi Agent a kapcsolatépítési idő növelésére (35 másodperc)
-const customDispatcher = new Agent({
-    connectTimeout: 35000,
-    headersTimeout: 35000,
-    bodyTimeout: 35000
-});
 
 const MEPAR_WMS_URL = 'https://mepar.mvh.allamkincstar.gov.hu/api/proxy/iier-gs/wms';
 const TARGET_CRS = 'EPSG:23700'; 
 const TILE_SIZE = 256;
 const MAX_EXTENT = 20037508.342789244; 
+
+// A megadott magyar SOCKS4 proxy-k (kizárólag a topo réteghez használva)
+const PROXIES = [
+    'socks4://46.107.230.122:1080',
+    'socks4://84.2.239.42:4153'
+];
 
 function calculateBboxFromTile(matrixId, tileRow, tileCol) {
     try {
@@ -46,13 +46,31 @@ function calculateBboxFromTile(matrixId, tileRow, tileCol) {
     }
 }
 
-module.exports = async (req, res) => {
-    let timeoutId;
-    const controller = new AbortController();
+// Kérés küldése (ha van proxyUrl, SOCKS4-en megy; ha null, közvetlenül kimegy)
+async function fetchTile(targetUrl, headers, proxyUrl = null, timeoutMs = 5000) {
+    const options = { headers };
+    if (proxyUrl) {
+        options.agent = new SocksProxyAgent(proxyUrl);
+    }
     
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    options.signal = controller.signal;
+
+    try {
+        const response = await fetch(targetUrl, options);
+        clearTimeout(timeoutId);
+        return response;
+    } catch (err) {
+        clearTimeout(timeoutId);
+        throw err;
+    }
+}
+
+module.exports = async (req, res) => {
     try {
         let { LAYER, FORMAT, BBOX, WIDTH, HEIGHT, REQUEST, SERVICE, VERSION, CRS } = req.query;
-        const { TileMatrix, TileRow, TileCol, TileMatrixSet } = req.query;
+        const { TileMatrix, TileRow, TileCol } = req.query;
         let sourceCRS = CRS;
 
         const headers = {
@@ -62,11 +80,7 @@ module.exports = async (req, res) => {
             "Accept-Language": "hu-HU,hu;q=0.9,en-US;q=0.8,en;q=0.7",
             "Referer": "https://mepar.mvh.allamkincstar.gov.hu/",
             "Origin": "https://mepar.mvh.allamkincstar.gov.hu",
-            "Connection": "keep-alive",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "same-origin",
-            "Upgrade-Insecure-Requests": "1",
+            "Connection": "keep-alive"
         };
 
         if (FORMAT && FORMAT.includes('{') && FORMAT.includes('}')) {
@@ -107,8 +121,10 @@ module.exports = async (req, res) => {
 
         const eovBBOX = `${yMin_R},${xMin_R},${yMax_R},${xMax_R}`;
 
+        const layerName = LAYER || 'iier:topo10';
+
         const wmsQueryParams = new URLSearchParams({
-            LAYERS: LAYER,
+            LAYERS: layerName,
             STYLES: 'raster', 
             FORMAT: FORMAT || 'image/png',
             TRANSPARENT: 'TRUE',
@@ -123,36 +139,46 @@ module.exports = async (req, res) => {
 
         const targetUrl = `${MEPAR_WMS_URL}?${wmsQueryParams.toString()}`;
 
-        timeoutId = setTimeout(() => controller.abort(), 35000);
+        let proxyResponse = null;
+        let lastError = null;
 
-        const proxyResponse = await fetch(targetUrl, { 
-            headers, 
-            signal: controller.signal,
-            dispatcher: customDispatcher
-        });
-        clearTimeout(timeoutId);
+        // ELLENŐRZÉS: Csak a topo rétegekhez használunk SOCKS4 proxy-t
+        const isTopoLayer = layerName.toLowerCase().includes('topo');
 
-        if (!proxyResponse.ok) {
-            const errorBody = await proxyResponse.text();
-            return res.status(proxyResponse.status).send(`GeoServer Hiba (${proxyResponse.status}): ${errorBody.substring(0, 500)}`);
+        if (isTopoLayer) {
+            // Topo réteg esetén végigpróbáljuk a magyar SOCKS4 proxy-kat
+            for (const proxyUrl of PROXIES) {
+                try {
+                    proxyResponse = await fetchTile(targetUrl, headers, proxyUrl, 4000);
+                    if (proxyResponse.ok) break;
+                } catch (err) {
+                    console.warn(`[TOPO PROXY HIBA] (${proxyUrl}):`, err.message);
+                    lastError = err;
+                }
+            }
+        } else {
+            // Minden egyéb réteghez (HRSZ, NTA, stb.) közvetlenül töltjük be, proxy nélkül
+            try {
+                proxyResponse = await fetchTile(targetUrl, headers, null, 10000);
+            } catch (err) {
+                lastError = err;
+            }
         }
 
-        const contentType = proxyResponse.headers.get('Content-Type');
+        if (!proxyResponse || !proxyResponse.ok) {
+            const status = proxyResponse ? proxyResponse.status : 504;
+            return res.status(status).send(`Sikertelen kérés (${layerName}). Utolsó hiba: ${lastError ? lastError.message : 'Nincs válasz'}`);
+        }
+
+        const contentType = proxyResponse.headers.get('content-type');
         res.setHeader('Content-Type', contentType || 'image/png');
         res.setHeader('Cache-Control', 'public, max-age=604800'); 
         
-        const buffer = await proxyResponse.arrayBuffer();
-        const imageBuffer = Buffer.from(buffer);
-        
-        res.status(200).send(imageBuffer);
+        const buffer = await proxyResponse.buffer();
+        return res.status(200).send(buffer);
         
     } catch (error) {
-        if (timeoutId) clearTimeout(timeoutId);
         console.error('[FATAL ERROR]:', error);
-        
-        if (error.name === 'AbortError' || error.code === 'UND_ERR_CONNECT_TIMEOUT') {
-            return res.status(504).send('Időtúllépés: A Kincstár szervere nem válaszolt időben.');
-        }
-        res.status(500).send(`Szerver hiba: ${error.message}`);
+        return res.status(500).send(`Szerver hiba: ${error.message}`);
     }
 };
