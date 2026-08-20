@@ -24,7 +24,7 @@
             background: #fafafa;
             border-bottom: 1px solid #ddd;
             padding: 8px 10px;
-            margin: -10px -10px 10px -10px; /* Kivitel a doboz széléig */
+            margin: -10px -10px 10px -10px;
             border-radius: 4px 4px 0 0;
             font-family: sans-serif;
             font-size: 11px;
@@ -36,7 +36,6 @@
             font-size: 10px; font-weight: bold; color: white;
         }
         .status-online { background-color: #388e3c; }
-        .status-proxy2 { background-color: #f57c00; } /* Figyelmeztető narancs, ha a 2. proxyra váltott */
         .status-offline { background-color: #d32f2f; }
         .status-checking { background-color: #757575; }
 
@@ -79,13 +78,13 @@
         zIndex: 300
     });
 
-    // 4. MEPAR Réteg (SOCKS4-gyel)
+    // 4. MEPAR Réteg (SOCKS4 proxy-val szűrve a backendben)
     const meparLayer = L.tileLayer(`${PROXY}/tiles?LAYER=iier:topo10&FORMAT=image/png&TileMatrixSet=EPSG:3857&TileMatrix={z}&TileRow={y}&TileCol={x}`, {
         opacity: 0.6,
         zIndex: 200
     });
 
-    // 5. HRSZ + TELEKHATÁR Réteg
+    // 5. HRSZ + TELEKHATÁR Réteg (Közvetlen elérés, proxy nélkül)
     const hrszLayer = L.tileLayer(`${PROXY}/hrsz?z={z}&x={x}&y={y}&LAYER=hrsz:foldreszlet,hrsz:felirat_kat`, {
         minZoom: 15,
         maxZoom: 18,
@@ -103,18 +102,17 @@
 
     const layerControl = L.control.layers(null, overlays, { collapsed: false }).addTo(map);
 
-    // --- PROXY STATUS & PING MONITORING (JOBB FELSŐ PANELBEN) ---
-    let consecutiveErrors = 0;
+    // --- PROXY STATUS & PING MONITORING ---
     let lastTileStartTime = 0;
 
-    // Beágyazzuk a Proxy állapotjelző panelt a L.control.layers ablak tetejére
+    // A Proxy kijelző doboz beágyazása a jobb felső rétegkezelő panel tetejére
     setTimeout(() => {
         const controlContainer = layerControl.getContainer();
         const proxyBox = document.createElement('div');
         proxyBox.className = 'proxy-status-box';
         proxyBox.innerHTML = `
             <div><b>Proxy státusz:</b> <span id="proxy-status" class="status-badge status-checking">Inaktív</span></div>
-            <div><b>Aktív Proxy:</b> <span id="active-proxy">Proxy 1 (Alap)</span></div>
+            <div><b>Aktív IP:</b> <span id="active-proxy">84.2.239.42:4153</span></div>
             <div><b>Válaszidő (Ping):</b> <span id="proxy-ping">--</span> ms</div>
         `;
         controlContainer.insertBefore(proxyBox, controlContainer.firstChild);
@@ -131,36 +129,15 @@
                 document.getElementById('proxy-ping').innerText = duration;
                 
                 const badge = document.getElementById('proxy-status');
-                const activeProxyElem = document.getElementById('active-proxy');
-
-                // Ha hosszabb a válaszidő (>2500ms), valószínűleg az 1. proxy timeoutolt és a 2.-ra váltott
-                if (duration > 2500 || consecutiveErrors > 0) {
-                    badge.innerText = 'Proxy 2-re váltva';
-                    badge.className = 'status-badge status-proxy2';
-                    activeProxyElem.innerText = 'Proxy 2 (SOCKS4 #2)';
-                } else {
-                    badge.innerText = 'Online';
-                    badge.className = 'status-badge status-online';
-                    activeProxyElem.innerText = 'Proxy 1 (SOCKS4 #1)';
-                }
-                consecutiveErrors = 0; // Hiba számláló nullázása
+                badge.innerText = 'Online';
+                badge.className = 'status-badge status-online';
             }
         });
 
         layer.on('tileerror', () => {
-            consecutiveErrors++;
             const badge = document.getElementById('proxy-status');
-            const activeProxyElem = document.getElementById('active-proxy');
-
-            if (consecutiveErrors >= 3) {
-                badge.innerText = 'Mindkét Proxy Hiba';
-                badge.className = 'status-badge status-offline';
-                activeProxyElem.innerText = 'Nincs kapcsolat';
-            } else {
-                badge.innerText = 'Proxy 1 Hiba -> Váltás...';
-                badge.className = 'status-badge status-proxy2';
-                activeProxyElem.innerText = 'Újrapróbálkozás (Proxy 2)...';
-            }
+            badge.innerText = 'Proxy Hiba';
+            badge.className = 'status-badge status-offline';
         });
     }
 
