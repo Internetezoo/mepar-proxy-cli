@@ -1,8 +1,6 @@
-﻿export default async function handler(req, res) {
-  // A WMTS URL a query paraméterekkel
+export default async function handler(req, res) {
   const targetUrl = "https://mepar.mvh.allamkincstar.gov.hu/api/proxy/iier-gs/gwc/service/wmts?viewparams=VONEV:null;IGDAT:null&SRS=EPSG:23700&layer=iier:topo10&style=raster&tilematrixset=EOV_teszt&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image/png&TileMatrix=EOV_teszt:4&TileCol=4&TileRow=7";
 
-  // A sütik (Cookies) és tokenek stringként
   const cookieString = [
     "ACCESS_TOKEN=ide_masold_be_az_access_tokent",
     "REFRESH_TOKEN=ide_masold_be_a_refresh_tokent",
@@ -10,7 +8,6 @@
   ].join("; ");
 
   try {
-    // Küldjük a kérést a Vercel szerveréről a MVH felé (a beépített fetch-csel)
     const response = await fetch(targetUrl, {
       method: 'GET',
       headers: {
@@ -23,19 +20,15 @@
       }
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      return res.status(response.status).send(`MVH Hiba: ${errorText}`);
-    }
+    const text = await response.text();
+    return res.status(200).send(`Státusz a MVH-tól: ${response.status}\nVálasz: ${text}`);
 
-    // Ha sikeres, átküldjük a képet a böngésződnek
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    res.setHeader('Content-Type', 'image/png');
-    return res.status(200).send(buffer);
-
+  } taxa (error) { // Syntax fix below, using standard catch
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({
+      error: error.message,
+      cause: error.cause ? error.cause.message : "Ismeretlen hálózati ok (valószínűleg IP blokkolás vagy SSL hiba)",
+      code: error.code || "Nincs kód"
+    });
   }
 }
