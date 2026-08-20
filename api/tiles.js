@@ -39,11 +39,13 @@ function calculateBboxFromTile(matrixId, tileRow, tileCol) {
     }
 }
 
-async function fetchWithRetry(targetUrl, headers, proxyUrl = null, retries = 2) {
+async function fetchWithRetry(targetUrl, headers, proxyUrlStr = null, retries = 2) {
     const options = { headers };
 
-    if (proxyUrl) {
-        options.dispatcher = new SocksProxyAgent(proxyUrl);
+    if (proxyUrlStr) {
+        // WHATWG URL objektum használata a DEP0169 figyelmeztetés elkerülésére
+        const parsedProxyUrl = new URL(proxyUrlStr);
+        options.agent = new SocksProxyAgent(parsedProxyUrl);
     }
 
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -52,7 +54,6 @@ async function fetchWithRetry(targetUrl, headers, proxyUrl = null, retries = 2) 
             const timeoutId = setTimeout(() => controller.abort(), 3500);
             options.signal = controller.signal;
 
-            // Beépített natív fetch használata node-fetch helyett
             const res = await fetch(targetUrl, options);
             clearTimeout(timeoutId);
 
