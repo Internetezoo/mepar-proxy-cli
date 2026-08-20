@@ -1,5 +1,6 @@
 const proj4 = require('proj4');
 const { SocksProxyAgent } = require('socks-proxy-agent');
+const fetch = require('node-fetch'); // Natív fetch helyett node-fetch kell a SocksProxyAgent-hez!
 
 proj4.defs("EPSG:23700", "+proj=somerc +lat_0=47.14439372222222 +lon_0=19.04857177777778 +k=0.99993 +x_0=650000 +y_0=200000 +ellps=GRS67 +towgs84=52.17,-71.82,-14.9,0.0,0.0,0.0,0.0 +units=m +no_defs");
 
@@ -39,120 +40,116 @@ function calculateBboxFromTile(matrixId, tileRow, tileCol) {
     }
 }
 
-async function fetchWithRetry(targetUrl, headers, proxyUrlStr = null, retries = 2) {
-    const options = { headers };
-
-    if (proxyUrlStr) {
-        // WHATWG URL objektum használata a DEP0169 figyelmeztetés elkerülésére
-        const parsedProxyUrl = new URL(proxyUrlStr);
-        options.agent = new SocksProxyAgent(parsedProxyUrl);
+async function fetchWithTimeout(url, options, timeoutMs = 8000) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const res = await fetch(url, { ...options, signal: controller.signal });
+        clearTimeout(id);
+        return res;
+    } catch (err) {
+        clearTimeout(id);
+        throw err;
     }
-
-    for (let attempt = 0; attempt <= retries; attempt++) {
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 3500);
-            options.signal = controller.signal;
-
-            const res = await fetch(targetUrl, options);
-            clearTimeout(timeoutId);
-
-            if (res.ok) return res;
-        } catch (err) {
-            if (attempt < retries && (err.code === 'ECONNRESET' || err.name === 'AbortError' || err.code === 'ETIMEDOUT')) {
-                await new Promise(r => setTimeout(r, 200));
-                continue;
-            }
-            throw err;
-        }
-    }
-    throw new Error('Minden próbálkozás elbukott.');
 }
 
 module.exports = async (req, res) => {
-    try {
-        let { LAYER, FORMAT, BBOX, WIDTH, HEIGHT, REQUEST, SERVICE, CRS, TileMatrix, TileRow, TileCol } = req.query;
-        let sourceCRS = CRS;
+    let { LAYER, FORMAT, BBOX, WIDTH, HEIGHT, REQUEST, SERVICE, CRS, TileMatrix, TileRow, TileCol } = req.query;
+    let sourceCRS = CRS;
 
-        const headers = {
-            "Host": "mepar.mvh.allamkincstar.gov.hu",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36",
-            "Referer": "https://mepar.mvh.allamkincstar.gov.hu/",
-            "Origin": "https://mepar.mvh.allamkincstar.gov.hu"
-        };
+    const headers = {
+        "Host": "mepar.mvh.allamkincstar.gov.hu",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": "https://mepar.mvh.allamkincstar.gov.hu/",
+        "Origin": "https://mepar.mvh.allamkincstar.gov.hu"
+    };
 
-        if (FORMAT && FORMAT.includes('{') && FORMAT.includes('}')) FORMAT = 'image/png';
+    if (FORMAT && FORMAT.includes('{') && FORMAT.includes('}')) FORMAT = 'image/png';
 
-        if (TileMatrix && TileRow && TileCol) {
-            const tileParams = calculateBboxFromTile(TileMatrix, TileRow, TileCol);
-            if (tileParams) {
-                BBOX = tileParams.BBOX;
-                sourceCRS = tileParams.CRS; 
-                WIDTH = tileParams.WIDTH;
-                HEIGHT = tileParams.HEIGHT;
-            }
+    if (TileMatrix && TileRow && TileCol) {
+        const tileParams = calculateBboxFromTile(TileMatrix, TileRow, TileCol);
+        if (tileParams) {
+            BBOX = tileParams.BBOX;
+            sourceCRS = tileParams.CRS; 
+            WIDTH = tileParams.WIDTH;
+            HEIGHT = tileParams.HEIGHT;
         }
-
-        if (!BBOX) return res.status(400).send('Hiányzó BBOX koordináták.');
-
-        const bboxParts = BBOX.split(',').map(Number);
-        const [minX, minY, maxX, maxY] = bboxParts;
-        
-        const [yMin, xMin] = proj4(sourceCRS || 'EPSG:3857', TARGET_CRS, [minX, minY]);
-        const [yMax, xMax] = proj4(sourceCRS || 'EPSG:3857', TARGET_CRS, [maxX, maxY]);
-        
-        const eovBBOX = `${yMin.toFixed(4)},${xMin.toFixed(4)},${yMax.toFixed(4)},${xMax.toFixed(4)}`;
-        const layerName = LAYER || 'iier:topo10';
-
-        const wmsQueryParams = new URLSearchParams({
-            LAYERS: layerName,
-            STYLES: 'raster', 
-            FORMAT: FORMAT || 'image/png',
-            TRANSPARENT: 'TRUE',
-            SERVICE: SERVICE || 'WMS',
-            VERSION: '1.1.1',
-            REQUEST: REQUEST || 'GetMap',
-            SRS: TARGET_CRS,
-            BBOX: eovBBOX, 
-            WIDTH: WIDTH || 256,
-            HEIGHT: HEIGHT || 256,
-        });
-
-        const targetUrl = `${MEPAR_WMS_URL}?${wmsQueryParams.toString()}`;
-
-        let proxyResponse = null;
-        let lastError = null;
-
-        for (const proxyUrl of PROXIES) {
-            try {
-                proxyResponse = await fetchWithRetry(targetUrl, headers, proxyUrl, 2);
-                if (proxyResponse && proxyResponse.ok) break;
-            } catch (err) {
-                lastError = err;
-            }
-        }
-
-        if (!proxyResponse || !proxyResponse.ok) {
-            try {
-                proxyResponse = await fetchWithRetry(targetUrl, headers, null, 1);
-            } catch (err) {
-                lastError = err;
-            }
-        }
-
-        if (!proxyResponse || !proxyResponse.ok) {
-            return res.status(504).send(`Szerver hiba (${layerName}): ${lastError ? lastError.message : 'Timeout'}`);
-        }
-
-        const contentType = proxyResponse.headers.get('content-type');
-        res.setHeader('Content-Type', contentType || 'image/png');
-        res.setHeader('Cache-Control', 'public, max-age=604800'); 
-        
-        const arrayBuffer = await proxyResponse.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        return res.status(200).send(buffer);
-        
-    } catch (error) {
-        return res.status(500).send(`Fatal error: ${error.message}`);
     }
+
+    if (!BBOX) {
+        console.error('[HIBA] Hiányzó BBOX');
+        return res.status(400).send('Hiányzó BBOX koordináták.');
+    }
+
+    const bboxParts = BBOX.split(',').map(Number);
+    const [minX, minY, maxX, maxY] = bboxParts;
+    
+    const [yMin, xMin] = proj4(sourceCRS || 'EPSG:3857', TARGET_CRS, [minX, minY]);
+    const [yMax, xMax] = proj4(sourceCRS || 'EPSG:3857', TARGET_CRS, [maxX, maxY]);
+    
+    const eovBBOX = `${yMin.toFixed(4)},${xMin.toFixed(4)},${yMax.toFixed(4)},${xMax.toFixed(4)}`;
+    const layerName = LAYER || 'iier:topo10';
+
+    const wmsQueryParams = new URLSearchParams({
+        LAYERS: layerName,
+        STYLES: 'raster', 
+        FORMAT: FORMAT || 'image/png',
+        TRANSPARENT: 'TRUE',
+        SERVICE: SERVICE || 'WMS',
+        VERSION: '1.1.1',
+        REQUEST: REQUEST || 'GetMap',
+        SRS: TARGET_CRS,
+        BBOX: eovBBOX, 
+        WIDTH: WIDTH || 256,
+        HEIGHT: HEIGHT || 256,
+    });
+
+    const targetUrl = `${MEPAR_WMS_URL}?${wmsQueryParams.toString()}`;
+
+    let proxyResponse = null;
+    let lastError = null;
+
+    // 1. SOCKS4 Proxy próbálkozás
+    for (const proxyUrlStr of PROXIES) {
+        try {
+            console.log(`[PROXY KÉRÉS] ${proxyUrlStr}`);
+            const agent = new SocksProxyAgent(proxyUrlStr);
+            proxyResponse = await fetchWithTimeout(targetUrl, { headers, agent }, 8000);
+            if (proxyResponse && proxyResponse.ok) {
+                console.log(`[PROXY SIKER] ${proxyUrlStr}`);
+                break;
+            }
+        } catch (err) {
+            console.error(`[PROXY HIBA] ${proxyUrlStr}:`, err.message);
+            lastError = err;
+        }
+    }
+
+    // 2. Közvetlen fallback
+    if (!proxyResponse || !proxyResponse.ok) {
+        try {
+            console.log('[KÖZVETLEN FALLBACK KÉRÉS]');
+            proxyResponse = await fetchWithTimeout(targetUrl, { headers }, 8000);
+            if (proxyResponse && proxyResponse.ok) {
+                console.log('[KÖZVETLEN SIKER]');
+            }
+        } catch (err) {
+            console.error('[KÖZVETLEN HIBA]:', err.message);
+            lastError = err;
+        }
+    }
+
+    if (!proxyResponse || !proxyResponse.ok) {
+        const status = proxyResponse ? proxyResponse.status : 504;
+        const errMsg = lastError ? lastError.message : 'Szerver időtúllépés';
+        console.error(`[VÉGSŐ HIBA] ${status} - ${errMsg}`);
+        return res.status(status).send(`Szerver hiba (${layerName}): ${errMsg}`);
+    }
+
+    const contentType = proxyResponse.headers.get('content-type');
+    res.setHeader('Content-Type', contentType || 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=604800'); 
+    
+    const buffer = await proxyResponse.buffer();
+    return res.status(200).send(buffer);
 };
