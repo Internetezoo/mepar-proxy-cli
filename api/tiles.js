@@ -7,15 +7,18 @@ const TARGET_CRS = 'EPSG:23700';
 const TILE_SIZE = 256;
 const MAX_EXTENT = 20037508.342789244; 
 
+// A böngészőből kimásolt érvényes azonosítók (Environment variable-ként érdemes tárolni)
+const AUTH_COOKIE = process.env.MEPAR_COOKIE || 'ACCESS_TOKEN=eyJhbGci...; REFRESH_TOKEN=eyJhbGci...; CSRF_TOKEN=q0Xe3BsWW9PkT8qMRqJxmpBor35L8gv0';
+const CSRF_TOKEN = process.env.MEPAR_CSRF || 'q0Xe3BsWW9PkT8qMRqJxmpBor35L8gv0';
+
 function calculateBboxFromTile(matrixId, tileRow, tileCol) {
     try {
-        const parts = matrixId.split(':');
+        const parts = String(matrixId).split(':');
         const zoom = parseInt(parts[parts.length - 1]); 
-        if (isNaN(zoom)) return null;
-
         const row = parseInt(tileRow);
         const col = parseInt(tileCol);
-        if (isNaN(row) || isNaN(col)) return null;
+
+        if (isNaN(zoom) || isNaN(row) || isNaN(col)) return null;
 
         const resolution = (2 * MAX_EXTENT) / (TILE_SIZE * Math.pow(2, zoom));
         const minX = -MAX_EXTENT + (col * TILE_SIZE * resolution);
@@ -23,12 +26,7 @@ function calculateBboxFromTile(matrixId, tileRow, tileCol) {
         const maxX = minX + (TILE_SIZE * resolution);
         const minY = maxY - (TILE_SIZE * resolution);
 
-        return {
-            BBOX: `${minX},${minY},${maxX},${maxY}`,
-            CRS: 'EPSG:3857',
-            WIDTH: TILE_SIZE,
-            HEIGHT: TILE_SIZE
-        };
+        return { minX, minY, maxX, maxY };
     } catch (e) {
         return null;
     }
@@ -36,71 +34,70 @@ function calculateBboxFromTile(matrixId, tileRow, tileCol) {
 
 module.exports = async (req, res) => {
     try {
-        let { LAYER, FORMAT, BBOX, WIDTH, HEIGHT, REQUEST, SERVICE, CRS, TileMatrix, TileRow, TileCol } = req.query;
-        let sourceCRS = CRS;
+        let { LAYER, LAYERS, FORMAT, BBOX, TileMatrix, TileRow, TileCol } = req.query;
+        let sourceCRS = req.query.CRS || 'EPSG:3857';
 
-        const headers = {
-            "Host": "mepar.mvh.allamkincstar.gov.hu",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36",
-            "Referer": "https://mepar.mvh.allamkincstar.gov.hu/",
-            "Origin": "https://mepar.mvh.allamkincstar.gov.hu"
-        };
+        const targetLayer = LAYERS || LAYER || 'iier:topo10';
+        let minX, minY, maxX, maxY;
 
-        if (FORMAT && FORMAT.includes('{') && FORMAT.includes('}')) FORMAT = 'image/png';
-
-        if (TileMatrix && TileRow && TileCol) {
-            const tileParams = calculateBboxFromTile(TileMatrix, TileRow, TileCol);
-            if (tileParams) {
-                BBOX = tileParams.BBOX;
-                sourceCRS = tileParams.CRS; 
-                WIDTH = tileParams.WIDTH;
-                HEIGHT = tileParams.HEIGHT;
-            }
+        if (TileMatrix !== undefined && TileRow !== undefined && TileCol !== undefined) {
+            const coords = calculateBboxFromTile(TileMatrix, TileRow, TileCol);
+            if (!coords) return res.status(400).send('Érvénytelen TileMatrix/Row/Col');
+            ({ minX, minY, maxX, maxY } = coords);
+        } else if (BBOX) {
+            const parts = BBOX.split(',').map(Number);
+            if (parts.length !== 4) return res.status(400).send('Hibás BBOX formátum');
+            [minX, minY, maxX, maxY] = parts;
+        } else {
+            return res.status(400).send('Hiányzó BBOX vagy Tile paraméterek');
         }
 
-        if (!BBOX) return res.status(400).send('Hiányzó BBOX koordináták.');
+        const [eovMinX, eovMinY] = proj4(sourceCRS, TARGET_CRS, [minX, minY]);
+        const [eovMaxX, eovMaxY] = proj4(sourceCRS, TARGET_CRS, [maxX, maxY]);
+        const eovBBOX = `${eovMinX.toFixed(4)},${eovMinY.toFixed(4)},${eovMaxX.toFixed(4)},${eovMaxY.toFixed(4)}`;
 
-        const bboxParts = BBOX.split(',').map(Number);
-        const [minX, minY, maxX, maxY] = bboxParts;
-        
-        const [yMin, xMin] = proj4(sourceCRS || 'EPSG:3857', TARGET_CRS, [minX, minY]);
-        const [yMax, xMax] = proj4(sourceCRS || 'EPSG:3857', TARGET_CRS, [maxX, maxY]);
-        
-        const eovBBOX = `${yMin.toFixed(4)},${xMin.toFixed(4)},${yMax.toFixed(4)},${xMax.toFixed(4)}`;
-        const layerName = LAYER || 'iier:topo10';
+        // KÖTELEZŐ AUTH FEJLÉCEK MÁSOLÁSA
+        const headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "hu-HU,hu;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://mepar.mvh.allamkincstar.gov.hu/",
+            "Origin": "https://mepar.mvh.allamkincstar.gov.hu",
+            "Cookie": AUTH_COOKIE,
+            "x-csrf-token": CSRF_TOKEN,
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin"
+        };
 
         const wmsQueryParams = new URLSearchParams({
-            LAYERS: layerName,
+            LAYERS: targetLayer,
             STYLES: 'raster', 
-            FORMAT: FORMAT || 'image/png',
+            FORMAT: 'image/png',
             TRANSPARENT: 'TRUE',
-            SERVICE: SERVICE || 'WMS',
+            SERVICE: 'WMS',
             VERSION: '1.1.1',
-            REQUEST: REQUEST || 'GetMap',
+            REQUEST: 'GetMap',
             SRS: TARGET_CRS,
             BBOX: eovBBOX, 
-            WIDTH: WIDTH || 256,
-            HEIGHT: HEIGHT || 256,
+            WIDTH: '256',
+            HEIGHT: '256',
         });
 
         const targetUrl = `${MEPAR_WMS_URL}?${wmsQueryParams.toString()}`;
+        const proxyResponse = await fetch(targetUrl, { headers });
 
-        // Közvetlen lekérés natív fetch segítségével
-        const response = await fetch(targetUrl, { headers });
-
-        if (!response.ok) {
-            return res.status(response.status).send(`MePAR hiba (${layerName}): ${response.statusText}`);
+        if (!proxyResponse.ok) {
+            const errorText = await proxyResponse.text();
+            return res.status(proxyResponse.status).send(`MEPAR Elutasítva: ${errorText}`);
         }
 
-        const contentType = response.headers.get('content-type');
-        res.setHeader('Content-Type', contentType || 'image/png');
-        res.setHeader('Cache-Control', 'public, max-age=604800'); 
-        
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        return res.status(200).send(buffer);
+        const buffer = await proxyResponse.arrayBuffer();
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('Cache-Control', 'public, max-age=86400'); 
+        return res.status(200).send(Buffer.from(buffer));
         
     } catch (error) {
-        return res.status(500).send(`Fatal error: ${error.message}`);
+        return res.status(500).send(`Szerver hiba: ${error.message}`);
     }
 };
