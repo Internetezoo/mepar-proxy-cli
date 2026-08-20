@@ -2,7 +2,6 @@ const proj4 = require('proj4');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 const fetch = require('node-fetch');
 
-// KRITIKUS: A HIVATALOS EOV (EPSG:23700) DEFINÍCIÓ
 proj4.defs("EPSG:23700", "+proj=somerc +lat_0=47.14439372222222 +lon_0=19.04857177777778 +k=0.99993 +x_0=650000 +y_0=200000 +ellps=GRS67 +towgs84=52.17,-71.82,-14.9,0.0,0.0,0.0,0.0 +units=m +no_defs");
 
 const MEPAR_WMS_URL = 'https://mepar.mvh.allamkincstar.gov.hu/api/proxy/iier-gs/wms';
@@ -10,7 +9,7 @@ const TARGET_CRS = 'EPSG:23700';
 const TILE_SIZE = 256;
 const MAX_EXTENT = 20037508.342789244; 
 
-// A tesztelt, igazoltan működő magyar SOCKS4 proxy
+// Proxy lista (több proxy lehetőség)
 const PROXIES = [
     'socks4://84.2.239.42:4153'
 ];
@@ -42,24 +41,37 @@ function calculateBboxFromTile(matrixId, tileRow, tileCol) {
     }
 }
 
-async function fetchTile(targetUrl, headers, proxyUrl = null, timeoutMs = 4000) {
-    const options = { headers };
+// Robusztus Letöltő függvény ECONNRESET kezeléssel
+async function fetchWithRetry(targetUrl, headers, proxyUrl = null, retries = 2) {
+    const options = { 
+        headers,
+        timeout: 4000
+    };
+
     if (proxyUrl) {
         options.agent = new SocksProxyAgent(proxyUrl);
     }
-    
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    options.signal = controller.signal;
 
-    try {
-        const response = await fetch(targetUrl, options);
-        clearTimeout(timeoutId);
-        return response;
-    } catch (err) {
-        clearTimeout(timeoutId);
-        throw err;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 3500);
+            options.signal = controller.signal;
+
+            const res = await fetch(targetUrl, options);
+            clearTimeout(timeoutId);
+
+            if (res.ok) return res;
+        } catch (err) {
+            // Ha ECONNRESET vagy egyéb hálózati megszakadás volt, és van még újrapróbálkozási lehetőség
+            if (attempt < retries && (err.code === 'ECONNRESET' || err.name === 'AbortError' || err.code === 'ETIMEDOUT')) {
+                await new Promise(r => setTimeout(r, 200)); // 200ms szünet az újrázás előtt
+                continue;
+            }
+            throw err;
+        }
     }
+    throw new Error('Minden próbálkozás elbukott.');
 }
 
 module.exports = async (req, res) => {
@@ -69,15 +81,12 @@ module.exports = async (req, res) => {
 
         const headers = {
             "Host": "mepar.mvh.allamkincstar.gov.hu",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36",
             "Referer": "https://mepar.mvh.allamkincstar.gov.hu/",
             "Origin": "https://mepar.mvh.allamkincstar.gov.hu"
         };
 
-        if (FORMAT && FORMAT.includes('{') && FORMAT.includes('}')) {
-            FORMAT = 'image/png'; 
-        }
+        if (FORMAT && FORMAT.includes('{') && FORMAT.includes('}')) FORMAT = 'image/png';
 
         if (TileMatrix && TileRow && TileCol) {
             const tileParams = calculateBboxFromTile(TileMatrix, TileRow, TileCol);
@@ -89,9 +98,7 @@ module.exports = async (req, res) => {
             }
         }
 
-        if (!BBOX) {
-            return res.status(400).send('Hiányzó BBOX koordináták.');
-        }
+        if (!BBOX) return res.status(400).send('Hiányzó BBOX koordináták.');
 
         const bboxParts = BBOX.split(',').map(Number);
         const [minX, minY, maxX, maxY] = bboxParts;
@@ -120,57 +127,39 @@ module.exports = async (req, res) => {
 
         let proxyResponse = null;
         let lastError = null;
-        let usedMethod = 'SOCKS4 Proxy';
 
-        const isTopoLayer = layerName.toLowerCase().includes('topo');
-
-        if (isTopoLayer) {
-            // 1. Próbálkozás a tesztelt SOCKS4 proxy-val
-            for (const proxyUrl of PROXIES) {
-                try {
-                    proxyResponse = await fetchTile(targetUrl, headers, proxyUrl, 4000);
-                    if (proxyResponse.ok) break;
-                } catch (err) {
-                    console.warn(`[PROXY HIBA] ${proxyUrl}: ${err.message}`);
-                    lastError = err;
-                }
-            }
-
-            // 2. TARTALÉK: Ha a proxy leáll, megpróbáljuk közvetlenül
-            if (!proxyResponse || !proxyResponse.ok) {
-                try {
-                    proxyResponse = await fetchTile(targetUrl, headers, null, 6000);
-                    usedMethod = 'Közvetlen (Fallback)';
-                } catch (err) {
-                    lastError = err;
-                }
-            }
-        } else {
-            // Nem topo réteg (pl. HRSZ, NTA) -> közvetlen elérés
+        // 1. Először megpróbáljuk a SOCKS4 Proxy-val (2x újrázással ECONNRESET esetén)
+        for (const proxyUrl of PROXIES) {
             try {
-                proxyResponse = await fetchTile(targetUrl, headers, null, 8000);
-                usedMethod = 'Közvetlen';
+                proxyResponse = await fetchWithRetry(targetUrl, headers, proxyUrl, 2);
+                if (proxyResponse && proxyResponse.ok) break;
+            } catch (err) {
+                console.warn(`[PROXY FAIL] ${err.message}`);
+                lastError = err;
+            }
+        }
+
+        // 2. HA A PROXY MEGSZAKADT (ECONNRESET): Azonnal váltunk közvetlen kapcsolatra!
+        if (!proxyResponse || !proxyResponse.ok) {
+            try {
+                proxyResponse = await fetchWithRetry(targetUrl, headers, null, 1);
             } catch (err) {
                 lastError = err;
             }
         }
 
         if (!proxyResponse || !proxyResponse.ok) {
-            const status = proxyResponse ? proxyResponse.status : 504;
-            const errMsg = lastError ? lastError.message : 'Nincs válasz a MePAR szervertől';
-            return res.status(status).send(`Hiba (${layerName}): ${errMsg}`);
+            return res.status(504).send(`Szerver hiba (${layerName}): ${lastError ? lastError.message : 'Timeout'}`);
         }
 
         const contentType = proxyResponse.headers.get('content-type');
         res.setHeader('Content-Type', contentType || 'image/png');
-        res.setHeader('X-Used-Method', usedMethod);
         res.setHeader('Cache-Control', 'public, max-age=604800'); 
         
         const buffer = await proxyResponse.buffer();
         return res.status(200).send(buffer);
         
     } catch (error) {
-        console.error('[FATAL ERROR]:', error);
-        return res.status(500).send(`Szerver hiba: ${error.message}`);
+        return res.status(500).send(`Fatal error: ${error.message}`);
     }
 };
