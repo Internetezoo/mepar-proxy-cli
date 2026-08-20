@@ -9,21 +9,45 @@
         body { margin: 0; padding: 0; }
         #map { width: 100%; height: 100vh; background: #e0e0e0; }
         
+        /* Információs overlay (bal alsó sarok) */
         .map-overlay {
             position: absolute; bottom: 20px; left: 10px; z-index: 1000;
-            background: rgba(255,255,255,0.9); padding: 8px 12px;
-            border-radius: 5px; font-family: sans-serif; font-size: 12px;
-            border: 1px solid #ccc;
+            background: rgba(255,255,255,0.95); padding: 10px 14px;
+            border-radius: 6px; font-family: sans-serif; font-size: 12px;
+            border: 1px solid #ccc; box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+            line-height: 1.6;
         }
-        .warning { color: #d32f2f; font-weight: bold; margin-top: 5px; }
+        .warning { color: #d32f2f; font-weight: bold; margin-top: 2px; }
+        
+        .status-badge {
+            display: inline-block; padding: 2px 6px; border-radius: 4px;
+            font-size: 11px; font-weight: bold; color: white;
+        }
+        .status-online { background-color: #388e3c; }
+        .status-offline { background-color: #d32f2f; }
+        .status-checking { background-color: #f57c00; }
+
+        /* Opacity csúszkák az L.control.layers panelben */
+        .opacity-control {
+            margin-top: 4px; margin-bottom: 8px; margin-left: 20px;
+            display: flex; align-items: center; gap: 8px; font-size: 11px;
+        }
+        .opacity-control input[type=range] {
+            width: 90px; cursor: pointer;
+        }
     </style>
 </head>
 <body>
 
 <div id="map"></div>
+
+<!-- Bal alsó információs ablak: Zoom, HRSZ státusz, Proxy & Ping -->
 <div class="map-overlay">
-    <b>Aktuális Zoom:</b> <span id="zoom-level">12</span>
+    <div><b>Aktuális Zoom:</b> <span id="zoom-level">12</span></div>
     <div id="hrsz-warn" class="warning">HRSZ: Nagyítson z15 szintig!</div>
+    <hr style="border:0; border-top:1px solid #ddd; margin: 6px 0;">
+    <div><b>Proxy státusz:</b> <span id="proxy-status" class="status-badge status-checking">Ellenőrzés...</span></div>
+    <div><b>Proxy Ping:</b> <span id="proxy-ping">--</span> ms</div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -38,44 +62,116 @@
         attribution: '&copy; CARTO'
     }).addTo(map);
 
-    // 3. NTA
+    // 3. NTA Réteg
     const ntaLayer = L.tileLayer(`${PROXY}/nta?z={z}&x={x}&y={y}`, {
         minZoom: 8,
         opacity: 0.8,
         zIndex: 300
     });
 
-    // 4. MEPAR
+    // 4. MEPAR Réteg
     const meparLayer = L.tileLayer(`${PROXY}/tiles?LAYER=iier:topo10&FORMAT=image/png&TileMatrixSet=EPSG:3857&TileMatrix={z}&TileRow={y}&TileCol={x}`, {
         opacity: 0.6,
         zIndex: 200
-    }); // Alapértelmezett kikapcsolva
+    });
 
-    // 5. HRSZ + TELEKHATÁR (Kritikus beállítások)
+    // 5. HRSZ + TELEKHATÁR Réteg
     const hrszLayer = L.tileLayer(`${PROXY}/hrsz?z={z}&x={x}&y={y}&LAYER=hrsz:foldreszlet,hrsz:felirat_kat`, {
-    minZoom: 15,
-    maxZoom: 18,
-    transparent: true,
-    format: 'image/png',
-    zIndex: 1000
-});
+        minZoom: 15,
+        maxZoom: 18,
+        transparent: true,
+        format: 'image/png',
+        zIndex: 1000
+    });
 
-    // 6. RÉTEGKEZELŐ (Minden réteg ki-be kapcsolható)
+    // 6. RÉTEGKEZELŐ (Rétegek ki-be kapcsolása)
     const overlays = {
         "<b style='color: #d32f2f;'>Telekhatár + HRSZ (z15+)</b>": hrszLayer,
         "<b style='color: #2d5a27;'>NTA</b>": ntaLayer,
         "<b style='color: #1976d2;'>MEPAR</b>": meparLayer
     };
 
-    // A rétegkezelő panel fixen nyitva marad (collapsed: false)
-    L.control.layers(null, overlays, { collapsed: false }).addTo(map);
+    const layerControl = L.control.layers(null, overlays, { collapsed: false }).addTo(map);
 
-    // Zoom figyelő és segítő szöveg
+    // --- PROXY STATUS & PING MÉRÉS ---
+    let lastTileStartTime = 0;
+
+    function measurePing(layer) {
+        layer.on('tileloadstart', () => {
+            lastTileStartTime = performance.now();
+        });
+
+        layer.on('tileload', () => {
+            if (lastTileStartTime > 0) {
+                const duration = Math.round(performance.now() - lastTileStartTime);
+                document.getElementById('proxy-ping').innerText = duration;
+                
+                const badge = document.getElementById('proxy-status');
+                badge.innerText = 'Online';
+                badge.className = 'status-badge status-online';
+            }
+        });
+
+        layer.on('tileerror', () => {
+            const badge = document.getElementById('proxy-status');
+            badge.innerText = 'Hiba / Offline';
+            badge.className = 'status-badge status-offline';
+        });
+    }
+
+    // Mérés kötése a proxy-t használó rétegekhez
+    measurePing(ntaLayer);
+    measurePing(meparLayer);
+    measurePing(hrszLayer);
+
+
+    // --- DYNAMIC OPACITY SLIDERS (ÁTLÁTSZÓSÁG CSÚSZKÁK) ---
+    // Segédfüggvény csúszkák hozzáadásához a rétegkezelő panelhez
+    function addOpacitySlider(layer, labelText, containerId, defaultVal) {
+        const container = document.createElement('div');
+        container.className = 'opacity-control';
+        container.innerHTML = `
+            <span>${labelText} átlátszóság:</span>
+            <input type="range" min="0" max="1" step="0.05" value="${defaultVal}">
+            <span class="val">${Math.round(defaultVal * 100)}%</span>
+        `;
+
+        const slider = container.querySelector('input');
+        const valText = container.querySelector('.val');
+
+        slider.addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            layer.setOpacity(val);
+            valText.innerText = Math.round(val * 100) + '%';
+        });
+
+        return container;
+    }
+
+    // Várjunk egy keveset, amíg a Leaflet kirajzolja a DOM-ba a vezérlőpanelt
+    setTimeout(() => {
+        const controlContainer = layerControl.getContainer();
+        const labels = controlContainer.querySelectorAll('label');
+
+        labels.forEach(label => {
+            const text = label.innerText || label.textContent;
+            
+            if (text.includes('NTA')) {
+                const slider = addOpacitySlider(ntaLayer, 'NTA', 'nta-slider', 0.8);
+                label.after(slider);
+            } else if (text.includes('MEPAR')) {
+                const slider = addOpacitySlider(meparLayer, 'MEPAR', 'mepar-slider', 0.6);
+                label.after(slider);
+            }
+        });
+    }, 100);
+
+
+    // --- ZOOM FIGYELŐ ÉS HRSZ FIGYELMEZTETÉS ---
     map.on('zoomend', () => {
         const z = map.getZoom();
         document.getElementById('zoom-level').innerText = z;
         
-        // Ha z15 alatt vagyunk, jelezzük, hogy a HRSZ nem fog látszani
         const warn = document.getElementById('hrsz-warn');
         if (z < 15) {
             warn.innerText = "HRSZ: Nagyítson z15 szintig!";
