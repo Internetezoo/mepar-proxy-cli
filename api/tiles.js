@@ -1,6 +1,5 @@
 const proj4 = require('proj4');
 const { SocksProxyAgent } = require('socks-proxy-agent');
-const fetch = require('node-fetch');
 
 proj4.defs("EPSG:23700", "+proj=somerc +lat_0=47.14439372222222 +lon_0=19.04857177777778 +k=0.99993 +x_0=650000 +y_0=200000 +ellps=GRS67 +towgs84=52.17,-71.82,-14.9,0.0,0.0,0.0,0.0 +units=m +no_defs");
 
@@ -9,7 +8,6 @@ const TARGET_CRS = 'EPSG:23700';
 const TILE_SIZE = 256;
 const MAX_EXTENT = 20037508.342789244; 
 
-// Proxy lista (több proxy lehetőség)
 const PROXIES = [
     'socks4://84.2.239.42:4153'
 ];
@@ -41,15 +39,11 @@ function calculateBboxFromTile(matrixId, tileRow, tileCol) {
     }
 }
 
-// Robusztus Letöltő függvény ECONNRESET kezeléssel
 async function fetchWithRetry(targetUrl, headers, proxyUrl = null, retries = 2) {
-    const options = { 
-        headers,
-        timeout: 4000
-    };
+    const options = { headers };
 
     if (proxyUrl) {
-        options.agent = new SocksProxyAgent(proxyUrl);
+        options.dispatcher = new SocksProxyAgent(proxyUrl);
     }
 
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -58,14 +52,14 @@ async function fetchWithRetry(targetUrl, headers, proxyUrl = null, retries = 2) 
             const timeoutId = setTimeout(() => controller.abort(), 3500);
             options.signal = controller.signal;
 
+            // Beépített natív fetch használata node-fetch helyett
             const res = await fetch(targetUrl, options);
             clearTimeout(timeoutId);
 
             if (res.ok) return res;
         } catch (err) {
-            // Ha ECONNRESET vagy egyéb hálózati megszakadás volt, és van még újrapróbálkozási lehetőség
             if (attempt < retries && (err.code === 'ECONNRESET' || err.name === 'AbortError' || err.code === 'ETIMEDOUT')) {
-                await new Promise(r => setTimeout(r, 200)); // 200ms szünet az újrázás előtt
+                await new Promise(r => setTimeout(r, 200));
                 continue;
             }
             throw err;
@@ -128,18 +122,15 @@ module.exports = async (req, res) => {
         let proxyResponse = null;
         let lastError = null;
 
-        // 1. Először megpróbáljuk a SOCKS4 Proxy-val (2x újrázással ECONNRESET esetén)
         for (const proxyUrl of PROXIES) {
             try {
                 proxyResponse = await fetchWithRetry(targetUrl, headers, proxyUrl, 2);
                 if (proxyResponse && proxyResponse.ok) break;
             } catch (err) {
-                console.warn(`[PROXY FAIL] ${err.message}`);
                 lastError = err;
             }
         }
 
-        // 2. HA A PROXY MEGSZAKADT (ECONNRESET): Azonnal váltunk közvetlen kapcsolatra!
         if (!proxyResponse || !proxyResponse.ok) {
             try {
                 proxyResponse = await fetchWithRetry(targetUrl, headers, null, 1);
@@ -156,7 +147,8 @@ module.exports = async (req, res) => {
         res.setHeader('Content-Type', contentType || 'image/png');
         res.setHeader('Cache-Control', 'public, max-age=604800'); 
         
-        const buffer = await proxyResponse.buffer();
+        const arrayBuffer = await proxyResponse.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
         return res.status(200).send(buffer);
         
     } catch (error) {
