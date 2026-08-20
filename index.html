@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>NTA, MEPAR és HRSZ Térkép</title>
+    <title>NTA, MEPAR és HRSZ Térkép (Deep Debug)</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -9,7 +9,6 @@
         body { margin: 0; padding: 0; }
         #map { width: 100%; height: 100vh; background: #e0e0e0; }
         
-        /* Bal alsó Zoom / HRSZ infó ablak */
         .map-overlay {
             position: absolute; bottom: 20px; left: 10px; z-index: 1000;
             background: rgba(255,255,255,0.95); padding: 10px 14px;
@@ -19,7 +18,6 @@
         }
         .warning { color: #d32f2f; font-weight: bold; margin-top: 2px; }
         
-        /* Jobb felső Proxy Status & Debug Panel */
         .proxy-status-box {
             background: #fafafa;
             border-bottom: 1px solid #ddd;
@@ -44,15 +42,14 @@
             font-size: 10px;
             word-break: break-all;
             margin-top: 4px;
-            max-height: 50px;
+            max-height: 80px;
             overflow-y: auto;
             background: #f1f8e9;
-            padding: 4px;
+            padding: 6px;
             border: 1px solid #c8e6c9;
             border-radius: 3px;
         }
 
-        /* Opacity csúszkák stílusa */
         .opacity-control {
             margin-top: 4px; margin-bottom: 8px; margin-left: 20px;
             display: flex; align-items: center; gap: 8px; font-size: 11px;
@@ -67,7 +64,6 @@
 
 <div id="map"></div>
 
-<!-- Bal alsó információs ablak: Zoom és HRSZ állapota -->
 <div class="map-overlay">
     <div><b>Aktuális Zoom:</b> <span id="zoom-level">12</span></div>
     <div id="hrsz-warn" class="warning">HRSZ: Nagyítson z15 szintig!</div>
@@ -77,29 +73,59 @@
 <script>
     const PROXY = 'https://mepar-proxy-cli.vercel.app/api';
 
-    // 1. Térkép inicializálása (Magyarország közepe)
     const map = L.map('map').setView([47.16, 19.50], 12);
 
-    // 2. ALAP RÉTEG: CartoDB Szürke (Positron)
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
         attribution: '&copy; CARTO'
     }).addTo(map);
 
-    // 3. NTA Réteg
-    const ntaLayer = L.tileLayer(`${PROXY}/nta?z={z}&x={x}&y={y}`, {
+    // --- DEEP DEBUG FETCH TILE LAYER ---
+    // Ez az egyedi réteg letölti a csempét Fetch segítségével, és kiolvassa a pontos HTTP hibaüzenetet
+    L.TileLayer.FetchDebug = L.TileLayer.extend({
+        createTile: function (coords, done) {
+            const tile = document.createElement('img');
+            const url = this.getTileUrl(coords);
+            const startTime = performance.now();
+
+            fetch(url)
+                .then(async (res) => {
+                    const duration = Math.round(performance.now() - startTime);
+                    
+                    if (!res.ok) {
+                        const errBody = await res.text();
+                        throw new Error(`HTTP ${res.status}: ${errBody || res.statusText}`);
+                    }
+                    
+                    // Frissítjük a sikeres státuszt
+                    updateDebugSuccess(duration);
+                    return res.blob();
+                })
+                .then((blob) => {
+                    tile.src = URL.createObjectURL(blob);
+                    done(null, tile);
+                })
+                .catch((err) => {
+                    updateDebugError(err.message);
+                    done(err, tile);
+                });
+
+            return tile;
+        }
+    });
+
+    // Layer-ek létrehozása az új FetchDebug mechanizmussal
+    const ntaLayer = new L.TileLayer.FetchDebug(`${PROXY}/nta?z={z}&x={x}&y={y}`, {
         minZoom: 8,
         opacity: 0.8,
         zIndex: 300
     });
 
-    // 4. MEPAR Réteg (Backendben SOCKS4-gyel szűrve)
-    const meparLayer = L.tileLayer(`${PROXY}/tiles?LAYER=iier:topo10&FORMAT=image/png&TileMatrixSet=EPSG:3857&TileMatrix={z}&TileRow={y}&TileCol={x}`, {
+    const meparLayer = new L.TileLayer.FetchDebug(`${PROXY}/tiles?LAYER=iier:topo10&FORMAT=image/png&TileMatrixSet=EPSG:3857&TileMatrix={z}&TileRow={y}&TileCol={x}`, {
         opacity: 0.6,
         zIndex: 200
     });
 
-    // 5. HRSZ + TELEKHATÁR Réteg
-    const hrszLayer = L.tileLayer(`${PROXY}/hrsz?z={z}&x={x}&y={y}&LAYER=hrsz:foldreszlet,hrsz:felirat_kat`, {
+    const hrszLayer = new L.TileLayer.FetchDebug(`${PROXY}/hrsz?z={z}&x={x}&y={y}&LAYER=hrsz:foldreszlet,hrsz:felirat_kat`, {
         minZoom: 15,
         maxZoom: 18,
         transparent: true,
@@ -107,7 +133,6 @@
         zIndex: 1000
     });
 
-    // 6. RÉTEGKEZELŐ (Jobb felső sarok)
     const overlays = {
         "<b style='color: #d32f2f;'>Telekhatár + HRSZ (z15+)</b>": hrszLayer,
         "<b style='color: #2d5a27;'>NTA</b>": ntaLayer,
@@ -116,68 +141,60 @@
 
     const layerControl = L.control.layers(null, overlays, { collapsed: false }).addTo(map);
 
-    // --- PROXY MONITORING ÉS DEBUG ABALAK ---
-    let lastTileStartTime = 0;
-
+    // --- DEBUG UI KEZELÉS ---
     setTimeout(() => {
         const controlContainer = layerControl.getContainer();
         const proxyBox = document.createElement('div');
         proxyBox.className = 'proxy-status-box';
         proxyBox.innerHTML = `
-            <div><b>Proxy Státusz:</b> <span id="proxy-status" class="status-badge status-checking">Inaktív</span></div>
-            <div><b>Aktív IP:</b> 84.2.239.42:4153</div>
+            <div><b>Státusz:</b> <span id="proxy-status" class="status-badge status-checking">Inaktív</span></div>
             <div><b>Válaszidő:</b> <span id="proxy-ping">--</span> ms</div>
-            <div id="debug-log-box" class="debug-log">Debug log: Várakozás kérésre...</div>
+            <div id="debug-log-box" class="debug-log">Debug: Várakozás kérésre...</div>
         `;
         controlContainer.insertBefore(proxyBox, controlContainer.firstChild);
     }, 50);
 
-    function trackProxy(layer) {
-        layer.on('tileloadstart', () => {
-            lastTileStartTime = performance.now();
-        });
+    function updateDebugSuccess(ping) {
+        const pingEl = document.getElementById('proxy-ping');
+        if (pingEl) pingEl.innerText = ping;
 
-        layer.on('tileload', (e) => {
-            if (lastTileStartTime > 0) {
-                const duration = Math.round(performance.now() - lastTileStartTime);
-                document.getElementById('proxy-ping').innerText = duration;
-                
-                const badge = document.getElementById('proxy-status');
-                badge.innerText = 'Online';
-                badge.className = 'status-badge status-online';
-                
-                const logBox = document.getElementById('debug-log-box');
-                logBox.innerText = `[OK] Csempe betöltve (${duration} ms)`;
-                logBox.style.color = "#2e7d32";
-                logBox.style.backgroundColor = "#f1f8e9";
-                logBox.style.borderColor = "#c8e6c9";
-            }
-        });
+        const badge = document.getElementById('proxy-status');
+        if (badge) {
+            badge.innerText = 'Online';
+            badge.className = 'status-badge status-online';
+        }
 
-        layer.on('tileerror', (e) => {
-            const badge = document.getElementById('proxy-status');
-            badge.innerText = 'Proxy Hiba';
+        const logBox = document.getElementById('debug-log-box');
+        if (logBox) {
+            logBox.innerText = `[OK 200] Csempe betöltve (${ping} ms)`;
+            logBox.style.color = "#2e7d32";
+            logBox.style.backgroundColor = "#f1f8e9";
+            logBox.style.borderColor = "#c8e6c9";
+        }
+    }
+
+    function updateDebugError(errMsg) {
+        const badge = document.getElementById('proxy-status');
+        if (badge) {
+            badge.innerText = 'HIBA';
             badge.className = 'status-badge status-offline';
+        }
 
-            const logBox = document.getElementById('debug-log-box');
+        const logBox = document.getElementById('debug-log-box');
+        if (logBox) {
+            logBox.innerText = `[PONTOS HIBA OK]:\n${errMsg}\nIdő: ${new Date().toLocaleTimeString()}`;
             logBox.style.color = "#d32f2f";
             logBox.style.backgroundColor = "#fff0f0";
             logBox.style.borderColor = "#ffcdd2";
-            
-            const failedUrl = e.tile.src || 'Ismeretlen URL';
-            logBox.innerText = `[HIBA] Nem sikerült a csempe letöltése!\nURL: ${failedUrl.substring(0, 40)}...\nIdő: ${new Date().toLocaleTimeString()}`;
-        });
+        }
     }
 
-    trackProxy(meparLayer);
-
-
-    // --- DYNAMIC OPACITY SLIDERS (ÁTLÁTSZÓSÁG CSÚSZKÁK) ---
+    // --- CSÚSZKÁK & ZOOM ---
     function addOpacitySlider(layer, labelText, defaultVal) {
         const container = document.createElement('div');
         container.className = 'opacity-control';
         container.innerHTML = `
-            <span>${labelText} átlátszóság:</span>
+            <span>${labelText}:</span>
             <input type="range" min="0" max="1" step="0.05" value="${defaultVal}">
             <span class="val">${Math.round(defaultVal * 100)}%</span>
         `;
@@ -200,23 +217,17 @@
 
         labels.forEach(label => {
             const text = label.innerText || label.textContent;
-            
             if (text.includes('NTA')) {
-                const slider = addOpacitySlider(ntaLayer, 'NTA', 0.8);
-                label.after(slider);
+                label.after(addOpacitySlider(ntaLayer, 'NTA', 0.8));
             } else if (text.includes('MEPAR')) {
-                const slider = addOpacitySlider(meparLayer, 'MEPAR', 0.6);
-                label.after(slider);
+                label.after(addOpacitySlider(meparLayer, 'MEPAR', 0.6));
             }
         });
     }, 100);
 
-
-    // --- ZOOM FIGYELŐ ÉS HRSZ FIGYELMEZTETÉS ---
     map.on('zoomend', () => {
         const z = map.getZoom();
         document.getElementById('zoom-level').innerText = z;
-        
         const warn = document.getElementById('hrsz-warn');
         if (z < 15) {
             warn.innerText = "HRSZ: Nagyítson z15 szintig!";
