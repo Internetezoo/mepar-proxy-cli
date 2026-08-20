@@ -23,11 +23,10 @@ export default async function handler(req, res) {
     const text = await response.text();
     return res.status(200).send(`Státusz a MVH-tól: ${response.status}\nVálasz: ${text}`);
 
-  } taxa (error) { // Syntax fix below, using standard catch
   } catch (error) {
     return res.status(500).json({
       error: error.message,
-      cause: error.cause ? error.cause.message : "Ismeretlen hálózati ok (valószínűleg IP blokkolás vagy SSL hiba)",
+      cause: error.cause ? error.cause.message : "Ismeretlen hálózati ok",
       code: error.code || "Nincs kód"
     });
   }
