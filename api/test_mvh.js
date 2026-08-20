@@ -7,7 +7,11 @@ export default async function handler(req, res) {
     "CSRF_TOKEN=q0Xe3BsWW9PkT8qMRqJxmpBor35L8gv0"
   ].join("; ");
 
+  const startTime = Date.now();
+
   try {
+    console.log(`[DEBUG] Kérés indítása ide: ${targetUrl} időpont: ${new Date().toISOString()}`);
+
     const response = await fetch(targetUrl, {
       method: 'GET',
       headers: {
@@ -17,17 +21,41 @@ export default async function handler(req, res) {
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
         "cookie": cookieString,
         "x-csrf-token": "q0Xe3BsWW9PkT8qMRqJxmpBor35L8gv0"
-      }
+      },
+      // Ha szeretnéd, növelhetjük a timeout-ot is (pl. 15 másodpercre)
+      signal: AbortSignal.timeout(15000) 
     });
 
+    const duration = Date.now() - startTime;
+    console.log(`[DEBUG] Válasz érkezett ${duration}ms alatt. Státusz: ${response.status}`);
+
     const text = await response.text();
-    return res.status(200).send(`Státusz a MVH-tól: ${response.status}\nVálasz: ${text}`);
+    return res.status(200).json({
+      success: true,
+      status: response.status,
+      durationMs: duration,
+      responsePreview: text.substring(0, 200)
+    });
 
   } catch (error) {
+    const duration = Date.now() - startTime;
+    console.error(`[DEBUG Hiba] ${duration}ms után elszállt:`, error);
+
     return res.status(500).json({
-      error: error.message,
-      cause: error.cause ? error.cause.message : "Ismeretlen hálózati ok",
-      code: error.code || "Nincs kód"
+      success: false,
+      durationMs: duration,
+      errorName: error.name,
+      errorMessage: error.message,
+      errorCode: error.code || null,
+      errorErrno: error.errno || null,
+      errorSyscall: error.syscall || null,
+      errorCause: error.cause ? {
+        message: error.cause.message,
+        code: error.cause.code,
+        errno: error.cause.errno,
+        address: error.cause.address,
+        port: error.cause.port
+      } : null
     });
   }
 }
