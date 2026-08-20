@@ -10,9 +10,8 @@ const TARGET_CRS = 'EPSG:23700';
 const TILE_SIZE = 256;
 const MAX_EXTENT = 20037508.342789244; 
 
-// A megadott magyar SOCKS4 proxy-k (kizárólag a topo réteghez használva)
+// A tesztelt, igazoltan működő magyar SOCKS4 proxy
 const PROXIES = [
-    'socks4://46.107.230.122:1080',
     'socks4://84.2.239.42:4153'
 ];
 
@@ -27,10 +26,8 @@ function calculateBboxFromTile(matrixId, tileRow, tileCol) {
         if (isNaN(row) || isNaN(col)) return null;
 
         const resolution = (2 * MAX_EXTENT) / (TILE_SIZE * Math.pow(2, zoom));
-        
         const minX = -MAX_EXTENT + (col * TILE_SIZE * resolution);
         const maxY = MAX_EXTENT - (row * TILE_SIZE * resolution);
-        
         const maxX = minX + (TILE_SIZE * resolution);
         const minY = maxY - (TILE_SIZE * resolution);
 
@@ -41,13 +38,11 @@ function calculateBboxFromTile(matrixId, tileRow, tileCol) {
             HEIGHT: TILE_SIZE
         };
     } catch (e) {
-        console.error("[ERROR] Hiba a BBOX számításakor:", e);
         return null;
     }
 }
 
-// Kérés küldése (ha van proxyUrl, SOCKS4-en megy; ha null, közvetlenül kimegy)
-async function fetchTile(targetUrl, headers, proxyUrl = null, timeoutMs = 5000) {
+async function fetchTile(targetUrl, headers, proxyUrl = null, timeoutMs = 4000) {
     const options = { headers };
     if (proxyUrl) {
         options.agent = new SocksProxyAgent(proxyUrl);
@@ -69,18 +64,15 @@ async function fetchTile(targetUrl, headers, proxyUrl = null, timeoutMs = 5000) 
 
 module.exports = async (req, res) => {
     try {
-        let { LAYER, FORMAT, BBOX, WIDTH, HEIGHT, REQUEST, SERVICE, VERSION, CRS } = req.query;
-        const { TileMatrix, TileRow, TileCol } = req.query;
+        let { LAYER, FORMAT, BBOX, WIDTH, HEIGHT, REQUEST, SERVICE, CRS, TileMatrix, TileRow, TileCol } = req.query;
         let sourceCRS = CRS;
 
         const headers = {
             "Host": "mepar.mvh.allamkincstar.gov.hu",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Accept-Language": "hu-HU,hu;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
             "Referer": "https://mepar.mvh.allamkincstar.gov.hu/",
-            "Origin": "https://mepar.mvh.allamkincstar.gov.hu",
-            "Connection": "keep-alive"
+            "Origin": "https://mepar.mvh.allamkincstar.gov.hu"
         };
 
         if (FORMAT && FORMAT.includes('{') && FORMAT.includes('}')) {
@@ -89,38 +81,25 @@ module.exports = async (req, res) => {
 
         if (TileMatrix && TileRow && TileCol) {
             const tileParams = calculateBboxFromTile(TileMatrix, TileRow, TileCol);
-            
-            if (!tileParams) {
-                return res.status(400).send('Érvénytelen TileMatrix, TileRow, vagy TileCol paraméterek.');
+            if (tileParams) {
+                BBOX = tileParams.BBOX;
+                sourceCRS = tileParams.CRS; 
+                WIDTH = tileParams.WIDTH;
+                HEIGHT = tileParams.HEIGHT;
             }
-            
-            BBOX = tileParams.BBOX;
-            sourceCRS = tileParams.CRS; 
-            WIDTH = tileParams.WIDTH;
-            HEIGHT = tileParams.HEIGHT;
         }
 
-        if (!BBOX || (sourceCRS !== 'EPSG:3857' && sourceCRS !== 'urn:ogc:def:crs:EPSG::3857')) {
-            return res.status(400).send(`Hiányzó BBOX koordináták vagy nem támogatott CRS: ${sourceCRS}.`);
+        if (!BBOX) {
+            return res.status(400).send('Hiányzó BBOX koordináták.');
         }
 
         const bboxParts = BBOX.split(',').map(Number);
-        if (bboxParts.length !== 4) {
-            return res.status(400).send('Érvénytelen BBOX formátum.');
-        }
-
         const [minX, minY, maxX, maxY] = bboxParts;
         
-        const [yMin, xMin] = proj4(sourceCRS, TARGET_CRS, [minX, minY]);
-        const [yMax, xMax] = proj4(sourceCRS, TARGET_CRS, [maxX, maxY]);
+        const [yMin, xMin] = proj4(sourceCRS || 'EPSG:3857', TARGET_CRS, [minX, minY]);
+        const [yMax, xMax] = proj4(sourceCRS || 'EPSG:3857', TARGET_CRS, [maxX, maxY]);
         
-        const xMin_R = xMin.toFixed(4);
-        const yMin_R = yMin.toFixed(4);
-        const xMax_R = xMax.toFixed(4);
-        const yMax_R = yMax.toFixed(4);
-
-        const eovBBOX = `${yMin_R},${xMin_R},${yMax_R},${xMax_R}`;
-
+        const eovBBOX = `${yMin.toFixed(4)},${xMin.toFixed(4)},${yMax.toFixed(4)},${xMax.toFixed(4)}`;
         const layerName = LAYER || 'iier:topo10';
 
         const wmsQueryParams = new URLSearchParams({
@@ -141,25 +120,36 @@ module.exports = async (req, res) => {
 
         let proxyResponse = null;
         let lastError = null;
+        let usedMethod = 'SOCKS4 Proxy';
 
-        // ELLENŐRZÉS: Csak a topo rétegekhez használunk SOCKS4 proxy-t
         const isTopoLayer = layerName.toLowerCase().includes('topo');
 
         if (isTopoLayer) {
-            // Topo réteg esetén végigpróbáljuk a magyar SOCKS4 proxy-kat
+            // 1. Próbálkozás a tesztelt SOCKS4 proxy-val
             for (const proxyUrl of PROXIES) {
                 try {
                     proxyResponse = await fetchTile(targetUrl, headers, proxyUrl, 4000);
                     if (proxyResponse.ok) break;
                 } catch (err) {
-                    console.warn(`[TOPO PROXY HIBA] (${proxyUrl}):`, err.message);
+                    console.warn(`[PROXY HIBA] ${proxyUrl}: ${err.message}`);
+                    lastError = err;
+                }
+            }
+
+            // 2. TARTALÉK: Ha a proxy leáll, megpróbáljuk közvetlenül
+            if (!proxyResponse || !proxyResponse.ok) {
+                try {
+                    proxyResponse = await fetchTile(targetUrl, headers, null, 6000);
+                    usedMethod = 'Közvetlen (Fallback)';
+                } catch (err) {
                     lastError = err;
                 }
             }
         } else {
-            // Minden egyéb réteghez (HRSZ, NTA, stb.) közvetlenül töltjük be, proxy nélkül
+            // Nem topo réteg (pl. HRSZ, NTA) -> közvetlen elérés
             try {
-                proxyResponse = await fetchTile(targetUrl, headers, null, 10000);
+                proxyResponse = await fetchTile(targetUrl, headers, null, 8000);
+                usedMethod = 'Közvetlen';
             } catch (err) {
                 lastError = err;
             }
@@ -167,11 +157,13 @@ module.exports = async (req, res) => {
 
         if (!proxyResponse || !proxyResponse.ok) {
             const status = proxyResponse ? proxyResponse.status : 504;
-            return res.status(status).send(`Sikertelen kérés (${layerName}). Utolsó hiba: ${lastError ? lastError.message : 'Nincs válasz'}`);
+            const errMsg = lastError ? lastError.message : 'Nincs válasz a MePAR szervertől';
+            return res.status(status).send(`Hiba (${layerName}): ${errMsg}`);
         }
 
         const contentType = proxyResponse.headers.get('content-type');
         res.setHeader('Content-Type', contentType || 'image/png');
+        res.setHeader('X-Used-Method', usedMethod);
         res.setHeader('Cache-Control', 'public, max-age=604800'); 
         
         const buffer = await proxyResponse.buffer();
