@@ -9,31 +9,44 @@
         body { margin: 0; padding: 0; }
         #map { width: 100%; height: 100vh; background: #e0e0e0; }
         
-        /* Információs overlay (bal alsó sarok) */
+        /* Bal alsó Zoom / HRSZ infó ablak */
         .map-overlay {
             position: absolute; bottom: 20px; left: 10px; z-index: 1000;
             background: rgba(255,255,255,0.95); padding: 10px 14px;
             border-radius: 6px; font-family: sans-serif; font-size: 12px;
             border: 1px solid #ccc; box-shadow: 0 2px 6px rgba(0,0,0,0.15);
-            line-height: 1.6;
+            line-height: 1.5;
         }
         .warning { color: #d32f2f; font-weight: bold; margin-top: 2px; }
         
+        /* Jobb felső Proxy Status Panel (a rétegkezelő tetején) */
+        .proxy-status-box {
+            background: #fafafa;
+            border-bottom: 1px solid #ddd;
+            padding: 8px 10px;
+            margin: -10px -10px 10px -10px; /* Kivitel a doboz széléig */
+            border-radius: 4px 4px 0 0;
+            font-family: sans-serif;
+            font-size: 11px;
+            line-height: 1.6;
+        }
+
         .status-badge {
             display: inline-block; padding: 2px 6px; border-radius: 4px;
-            font-size: 11px; font-weight: bold; color: white;
+            font-size: 10px; font-weight: bold; color: white;
         }
         .status-online { background-color: #388e3c; }
+        .status-proxy2 { background-color: #f57c00; } /* Figyelmeztető narancs, ha a 2. proxyra váltott */
         .status-offline { background-color: #d32f2f; }
-        .status-checking { background-color: #f57c00; }
+        .status-checking { background-color: #757575; }
 
-        /* Opacity csúszkák az L.control.layers panelben */
+        /* Opacity csúszkák stílusa */
         .opacity-control {
             margin-top: 4px; margin-bottom: 8px; margin-left: 20px;
             display: flex; align-items: center; gap: 8px; font-size: 11px;
         }
         .opacity-control input[type=range] {
-            width: 90px; cursor: pointer;
+            width: 85px; cursor: pointer;
         }
     </style>
 </head>
@@ -41,13 +54,10 @@
 
 <div id="map"></div>
 
-<!-- Bal alsó információs ablak: Zoom, HRSZ státusz, Proxy & Ping -->
+<!-- Bal alsó információs ablak: Zoom és HRSZ státusz -->
 <div class="map-overlay">
     <div><b>Aktuális Zoom:</b> <span id="zoom-level">12</span></div>
     <div id="hrsz-warn" class="warning">HRSZ: Nagyítson z15 szintig!</div>
-    <hr style="border:0; border-top:1px solid #ddd; margin: 6px 0;">
-    <div><b>Proxy státusz:</b> <span id="proxy-status" class="status-badge status-checking">Ellenőrzés...</span></div>
-    <div><b>Proxy Ping:</b> <span id="proxy-ping">--</span> ms</div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -69,7 +79,7 @@
         zIndex: 300
     });
 
-    // 4. MEPAR Réteg
+    // 4. MEPAR Réteg (SOCKS4-gyel)
     const meparLayer = L.tileLayer(`${PROXY}/tiles?LAYER=iier:topo10&FORMAT=image/png&TileMatrixSet=EPSG:3857&TileMatrix={z}&TileRow={y}&TileCol={x}`, {
         opacity: 0.6,
         zIndex: 200
@@ -84,19 +94,33 @@
         zIndex: 1000
     });
 
-    // 6. RÉTEGKEZELŐ (Rétegek ki-be kapcsolása)
+    // 6. RÉTEGKEZELŐ (Jobb felső sarok)
     const overlays = {
         "<b style='color: #d32f2f;'>Telekhatár + HRSZ (z15+)</b>": hrszLayer,
         "<b style='color: #2d5a27;'>NTA</b>": ntaLayer,
-        "<b style='color: #1976d2;'>MEPAR</b>": meparLayer
+        "<b style='color: #1976d2;'>MEPAR (Topo)</b>": meparLayer
     };
 
     const layerControl = L.control.layers(null, overlays, { collapsed: false }).addTo(map);
 
-    // --- PROXY STATUS & PING MÉRÉS ---
+    // --- PROXY STATUS & PING MONITORING (JOBB FELSŐ PANELBEN) ---
+    let consecutiveErrors = 0;
     let lastTileStartTime = 0;
 
-    function measurePing(layer) {
+    // Beágyazzuk a Proxy állapotjelző panelt a L.control.layers ablak tetejére
+    setTimeout(() => {
+        const controlContainer = layerControl.getContainer();
+        const proxyBox = document.createElement('div');
+        proxyBox.className = 'proxy-status-box';
+        proxyBox.innerHTML = `
+            <div><b>Proxy státusz:</b> <span id="proxy-status" class="status-badge status-checking">Inaktív</span></div>
+            <div><b>Aktív Proxy:</b> <span id="active-proxy">Proxy 1 (Alap)</span></div>
+            <div><b>Válaszidő (Ping):</b> <span id="proxy-ping">--</span> ms</div>
+        `;
+        controlContainer.insertBefore(proxyBox, controlContainer.firstChild);
+    }, 50);
+
+    function trackProxy(layer) {
         layer.on('tileloadstart', () => {
             lastTileStartTime = performance.now();
         });
@@ -107,27 +131,45 @@
                 document.getElementById('proxy-ping').innerText = duration;
                 
                 const badge = document.getElementById('proxy-status');
-                badge.innerText = 'Online';
-                badge.className = 'status-badge status-online';
+                const activeProxyElem = document.getElementById('active-proxy');
+
+                // Ha hosszabb a válaszidő (>2500ms), valószínűleg az 1. proxy timeoutolt és a 2.-ra váltott
+                if (duration > 2500 || consecutiveErrors > 0) {
+                    badge.innerText = 'Proxy 2-re váltva';
+                    badge.className = 'status-badge status-proxy2';
+                    activeProxyElem.innerText = 'Proxy 2 (SOCKS4 #2)';
+                } else {
+                    badge.innerText = 'Online';
+                    badge.className = 'status-badge status-online';
+                    activeProxyElem.innerText = 'Proxy 1 (SOCKS4 #1)';
+                }
+                consecutiveErrors = 0; // Hiba számláló nullázása
             }
         });
 
         layer.on('tileerror', () => {
+            consecutiveErrors++;
             const badge = document.getElementById('proxy-status');
-            badge.innerText = 'Hiba / Offline';
-            badge.className = 'status-badge status-offline';
+            const activeProxyElem = document.getElementById('active-proxy');
+
+            if (consecutiveErrors >= 3) {
+                badge.innerText = 'Mindkét Proxy Hiba';
+                badge.className = 'status-badge status-offline';
+                activeProxyElem.innerText = 'Nincs kapcsolat';
+            } else {
+                badge.innerText = 'Proxy 1 Hiba -> Váltás...';
+                badge.className = 'status-badge status-proxy2';
+                activeProxyElem.innerText = 'Újrapróbálkozás (Proxy 2)...';
+            }
         });
     }
 
-    // Mérés kötése a proxy-t használó rétegekhez
-    measurePing(ntaLayer);
-    measurePing(meparLayer);
-    measurePing(hrszLayer);
+    // Monitoring összekötése a MEPAR réteggel
+    trackProxy(meparLayer);
 
 
     // --- DYNAMIC OPACITY SLIDERS (ÁTLÁTSZÓSÁG CSÚSZKÁK) ---
-    // Segédfüggvény csúszkák hozzáadásához a rétegkezelő panelhez
-    function addOpacitySlider(layer, labelText, containerId, defaultVal) {
+    function addOpacitySlider(layer, labelText, defaultVal) {
         const container = document.createElement('div');
         container.className = 'opacity-control';
         container.innerHTML = `
@@ -148,7 +190,6 @@
         return container;
     }
 
-    // Várjunk egy keveset, amíg a Leaflet kirajzolja a DOM-ba a vezérlőpanelt
     setTimeout(() => {
         const controlContainer = layerControl.getContainer();
         const labels = controlContainer.querySelectorAll('label');
@@ -157,10 +198,10 @@
             const text = label.innerText || label.textContent;
             
             if (text.includes('NTA')) {
-                const slider = addOpacitySlider(ntaLayer, 'NTA', 'nta-slider', 0.8);
+                const slider = addOpacitySlider(ntaLayer, 'NTA', 0.8);
                 label.after(slider);
             } else if (text.includes('MEPAR')) {
-                const slider = addOpacitySlider(meparLayer, 'MEPAR', 'mepar-slider', 0.6);
+                const slider = addOpacitySlider(meparLayer, 'MEPAR', 0.6);
                 label.after(slider);
             }
         });
