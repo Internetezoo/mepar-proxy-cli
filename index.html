@@ -1,242 +1,63 @@
 <!DOCTYPE html>
-<html>
+<html lang="hu">
 <head>
-    <title>NTA, MEPAR és HRSZ Térkép (Deep Debug)</title>
-    <meta charset="utf-8" />
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <title>MePAR Térkép Megjelenítő</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-        body { margin: 0; padding: 0; }
-        #map { width: 100%; height: 100vh; background: #e0e0e0; }
-        
-        .map-overlay {
-            position: absolute; bottom: 20px; left: 10px; z-index: 1000;
-            background: rgba(255,255,255,0.95); padding: 10px 14px;
-            border-radius: 6px; font-family: sans-serif; font-size: 12px;
-            border: 1px solid #ccc; box-shadow: 0 2px 6px rgba(0,0,0,0.15);
-            line-height: 1.5;
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
         }
-        .warning { color: #d32f2f; font-weight: bold; margin-top: 2px; }
-        
-        .proxy-status-box {
-            background: #fafafa;
-            border-bottom: 1px solid #ddd;
-            padding: 8px 10px;
-            margin: -10px -10px 10px -10px;
-            border-radius: 4px 4px 0 0;
-            font-family: monospace, sans-serif;
-            font-size: 11px;
-            line-height: 1.5;
-        }
-
-        .status-badge {
-            display: inline-block; padding: 2px 6px; border-radius: 4px;
-            font-size: 10px; font-weight: bold; color: white;
-        }
-        .status-online { background-color: #388e3c; }
-        .status-offline { background-color: #d32f2f; }
-        .status-checking { background-color: #757575; }
-
-        .debug-log {
-            color: #2e7d32;
-            font-size: 10px;
-            word-break: break-all;
-            margin-top: 4px;
-            max-height: 80px;
-            overflow-y: auto;
-            background: #f1f8e9;
-            padding: 6px;
-            border: 1px solid #c8e6c9;
-            border-radius: 3px;
-        }
-
-        .opacity-control {
-            margin-top: 4px; margin-bottom: 8px; margin-left: 20px;
-            display: flex; align-items: center; gap: 8px; font-size: 11px;
-            font-family: sans-serif;
-        }
-        .opacity-control input[type=range] {
-            width: 85px; cursor: pointer;
+        #map {
+            width: 100vw;
+            height: 100vh;
         }
     </style>
 </head>
 <body>
+    <div id="map"></div>
 
-<div id="map"></div>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Térkép inicializálása Magyarország közepére
+        const map = L.map('map').setView([47.1625, 19.5033], 8);
 
-<div class="map-overlay">
-    <div><b>Aktuális Zoom:</b> <span id="zoom-level">12</span></div>
-    <div id="hrsz-warn" class="warning">HRSZ: Nagyítson z15 szintig!</div>
-</div>
+        // OpenStreetMap háttérréteg
+        const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; OpenStreetMap'
+        }).addTo(map);
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script>
-    const PROXY = 'https://mepar-proxy-cli.vercel.app/api';
+        // MePAR Topo10 réteg (a saját Vercel backend /api/tiles végpontodon keresztül)
+        const meparTopo = L.tileLayer('/api/tiles?LAYER=iier:topo10&TileMatrixSet=EPSG:3857&TileMatrix=EPSG:3857:{z}&TileRow={y}&TileCol={x}', {
+            maxZoom: 19,
+            tileSize: 256,
+            attribution: '&copy; MePAR / Magyar Államkincstár'
+        }).addTo(map);
 
-    const map = L.map('map').setView([47.16, 19.50], 12);
-
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; CARTO'
-    }).addTo(map);
-
-    // --- DEEP DEBUG FETCH TILE LAYER ---
-    // Ez az egyedi réteg letölti a csempét Fetch segítségével, és kiolvassa a pontos HTTP hibaüzenetet
-    L.TileLayer.FetchDebug = L.TileLayer.extend({
-        createTile: function (coords, done) {
-            const tile = document.createElement('img');
-            const url = this.getTileUrl(coords);
-            const startTime = performance.now();
-
-            fetch(url)
-                .then(async (res) => {
-                    const duration = Math.round(performance.now() - startTime);
-                    
-                    if (!res.ok) {
-                        const errBody = await res.text();
-                        throw new Error(`HTTP ${res.status}: ${errBody || res.statusText}`);
-                    }
-                    
-                    // Frissítjük a sikeres státuszt
-                    updateDebugSuccess(duration);
-                    return res.blob();
-                })
-                .then((blob) => {
-                    tile.src = URL.createObjectURL(blob);
-                    done(null, tile);
-                })
-                .catch((err) => {
-                    updateDebugError(err.message);
-                    done(err, tile);
-                });
-
-            return tile;
-        }
-    });
-
-    // Layer-ek létrehozása az új FetchDebug mechanizmussal
-    const ntaLayer = new L.TileLayer.FetchDebug(`${PROXY}/nta?z={z}&x={x}&y={y}`, {
-        minZoom: 8,
-        opacity: 0.8,
-        zIndex: 300
-    });
-
-    const meparLayer = new L.TileLayer.FetchDebug(`${PROXY}/tiles?LAYER=iier:topo10&FORMAT=image/png&TileMatrixSet=EPSG:3857&TileMatrix={z}&TileRow={y}&TileCol={x}`, {
-        opacity: 0.6,
-        zIndex: 200
-    });
-
-    const hrszLayer = new L.TileLayer.FetchDebug(`${PROXY}/hrsz?z={z}&x={x}&y={y}&LAYER=hrsz:foldreszlet,hrsz:felirat_kat`, {
-        minZoom: 15,
-        maxZoom: 18,
-        transparent: true,
-        format: 'image/png',
-        zIndex: 1000
-    });
-
-    const overlays = {
-        "<b style='color: #d32f2f;'>Telekhatár + HRSZ (z15+)</b>": hrszLayer,
-        "<b style='color: #2d5a27;'>NTA</b>": ntaLayer,
-        "<b style='color: #1976d2;'>MEPAR (Topo)</b>": meparLayer
-    };
-
-    const layerControl = L.control.layers(null, overlays, { collapsed: false }).addTo(map);
-
-    // --- DEBUG UI KEZELÉS ---
-    setTimeout(() => {
-        const controlContainer = layerControl.getContainer();
-        const proxyBox = document.createElement('div');
-        proxyBox.className = 'proxy-status-box';
-        proxyBox.innerHTML = `
-            <div><b>Státusz:</b> <span id="proxy-status" class="status-badge status-checking">Inaktív</span></div>
-            <div><b>Válaszidő:</b> <span id="proxy-ping">--</span> ms</div>
-            <div id="debug-log-box" class="debug-log">Debug: Várakozás kérésre...</div>
-        `;
-        controlContainer.insertBefore(proxyBox, controlContainer.firstChild);
-    }, 50);
-
-    function updateDebugSuccess(ping) {
-        const pingEl = document.getElementById('proxy-ping');
-        if (pingEl) pingEl.innerText = ping;
-
-        const badge = document.getElementById('proxy-status');
-        if (badge) {
-            badge.innerText = 'Online';
-            badge.className = 'status-badge status-online';
-        }
-
-        const logBox = document.getElementById('debug-log-box');
-        if (logBox) {
-            logBox.innerText = `[OK 200] Csempe betöltve (${ping} ms)`;
-            logBox.style.color = "#2e7d32";
-            logBox.style.backgroundColor = "#f1f8e9";
-            logBox.style.borderColor = "#c8e6c9";
-        }
-    }
-
-    function updateDebugError(errMsg) {
-        const badge = document.getElementById('proxy-status');
-        if (badge) {
-            badge.innerText = 'HIBA';
-            badge.className = 'status-badge status-offline';
-        }
-
-        const logBox = document.getElementById('debug-log-box');
-        if (logBox) {
-            logBox.innerText = `[PONTOS HIBA OK]:\n${errMsg}\nIdő: ${new Date().toLocaleTimeString()}`;
-            logBox.style.color = "#d32f2f";
-            logBox.style.backgroundColor = "#fff0f0";
-            logBox.style.borderColor = "#ffcdd2";
-        }
-    }
-
-    // --- CSÚSZKÁK & ZOOM ---
-    function addOpacitySlider(layer, labelText, defaultVal) {
-        const container = document.createElement('div');
-        container.className = 'opacity-control';
-        container.innerHTML = `
-            <span>${labelText}:</span>
-            <input type="range" min="0" max="1" step="0.05" value="${defaultVal}">
-            <span class="val">${Math.round(defaultVal * 100)}%</span>
-        `;
-
-        const slider = container.querySelector('input');
-        const valText = container.querySelector('.val');
-
-        slider.addEventListener('input', (e) => {
-            const val = parseFloat(e.target.value);
-            layer.setOpacity(val);
-            valText.innerText = Math.round(val * 100) + '%';
+        // MePAR Fizikai Blokkok réteg
+        const meparBlokkok = L.tileLayer('/api/tiles?LAYER=iier:fizikai_blokk&TileMatrixSet=EPSG:3857&TileMatrix=EPSG:3857:{z}&TileRow={y}&TileCol={x}', {
+            maxZoom: 19,
+            tileSize: 256,
+            transparent: true
         });
 
-        return container;
-    }
+        // Rétegválasztó doboz a térkép jobb felső sarkában
+        const baseMaps = {
+            "OpenStreetMap": osm
+        };
 
-    setTimeout(() => {
-        const controlContainer = layerControl.getContainer();
-        const labels = controlContainer.querySelectorAll('label');
+        const overlayMaps = {
+            "MePAR Topo10": meparTopo,
+            "MePAR Fizikai Blokkok": meparBlokkok
+        };
 
-        labels.forEach(label => {
-            const text = label.innerText || label.textContent;
-            if (text.includes('NTA')) {
-                label.after(addOpacitySlider(ntaLayer, 'NTA', 0.8));
-            } else if (text.includes('MEPAR')) {
-                label.after(addOpacitySlider(meparLayer, 'MEPAR', 0.6));
-            }
-        });
-    }, 100);
-
-    map.on('zoomend', () => {
-        const z = map.getZoom();
-        document.getElementById('zoom-level').innerText = z;
-        const warn = document.getElementById('hrsz-warn');
-        if (z < 15) {
-            warn.innerText = "HRSZ: Nagyítson z15 szintig!";
-            warn.style.color = "#d32f2f";
-        } else {
-            warn.innerText = "HRSZ Aktív";
-            warn.style.color = "#388e3c";
-        }
-    });
-</script>
+        L.control.layers(baseMaps, overlayMaps).addTo(map);
+    </script>
 </body>
 </html>
