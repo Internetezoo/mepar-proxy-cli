@@ -1,6 +1,6 @@
 const proj4 = require('proj4');
 const { SocksProxyAgent } = require('socks-proxy-agent');
-const fetch = require('node-fetch'); // Natív fetch helyett node-fetch kell a SocksProxyAgent-hez!
+const fetch = require('node-fetch');
 
 proj4.defs("EPSG:23700", "+proj=somerc +lat_0=47.14439372222222 +lon_0=19.04857177777778 +k=0.99993 +x_0=650000 +y_0=200000 +ellps=GRS67 +towgs84=52.17,-71.82,-14.9,0.0,0.0,0.0,0.0 +units=m +no_defs");
 
@@ -40,7 +40,7 @@ function calculateBboxFromTile(matrixId, tileRow, tileCol) {
     }
 }
 
-async function fetchWithTimeout(url, options, timeoutMs = 8000) {
+async function fetchWithTimeout(url, options, timeoutMs = 3500) {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -54,6 +54,9 @@ async function fetchWithTimeout(url, options, timeoutMs = 8000) {
 }
 
 module.exports = async (req, res) => {
+    // Azonnali log, hogy látszódjon a Vercel-ben a kérés indítása
+    console.log('[LEKÉRÉS INDÍTVA]:', req.query.LAYER || 'iier:topo10');
+
     let { LAYER, FORMAT, BBOX, WIDTH, HEIGHT, REQUEST, SERVICE, CRS, TileMatrix, TileRow, TileCol } = req.query;
     let sourceCRS = CRS;
 
@@ -77,7 +80,6 @@ module.exports = async (req, res) => {
     }
 
     if (!BBOX) {
-        console.error('[HIBA] Hiányzó BBOX');
         return res.status(400).send('Hiányzó BBOX koordináták.');
     }
 
@@ -109,41 +111,40 @@ module.exports = async (req, res) => {
     let proxyResponse = null;
     let lastError = null;
 
-    // 1. SOCKS4 Proxy próbálkozás
+    // 1. SOCKS4 Proxy (Max 3.5 mp timeout)
     for (const proxyUrlStr of PROXIES) {
         try {
-            console.log(`[PROXY KÉRÉS] ${proxyUrlStr}`);
             const agent = new SocksProxyAgent(proxyUrlStr);
-            proxyResponse = await fetchWithTimeout(targetUrl, { headers, agent }, 8000);
+            proxyResponse = await fetchWithTimeout(targetUrl, { headers, agent }, 3500);
             if (proxyResponse && proxyResponse.ok) {
-                console.log(`[PROXY SIKER] ${proxyUrlStr}`);
+                console.log('[PROXY SIKER]:', proxyUrlStr);
                 break;
             }
         } catch (err) {
-            console.error(`[PROXY HIBA] ${proxyUrlStr}:`, err.message);
+            console.warn(`[PROXY LELŐVE/TIMEOUT] ${proxyUrlStr}:`, err.message);
             lastError = err;
         }
     }
 
-    // 2. Közvetlen fallback
+    // 2. Közvetlen fallback (Max 3.5 mp timeout)
     if (!proxyResponse || !proxyResponse.ok) {
         try {
-            console.log('[KÖZVETLEN FALLBACK KÉRÉS]');
-            proxyResponse = await fetchWithTimeout(targetUrl, { headers }, 8000);
+            console.log('[KÖZVETLEN PRÓBÁLKOZÁS]');
+            proxyResponse = await fetchWithTimeout(targetUrl, { headers }, 3500);
             if (proxyResponse && proxyResponse.ok) {
                 console.log('[KÖZVETLEN SIKER]');
             }
         } catch (err) {
-            console.error('[KÖZVETLEN HIBA]:', err.message);
+            console.warn('[KÖZVETLEN HIBA]:', err.message);
             lastError = err;
         }
     }
 
     if (!proxyResponse || !proxyResponse.ok) {
         const status = proxyResponse ? proxyResponse.status : 504;
-        const errMsg = lastError ? lastError.message : 'Szerver időtúllépés';
-        console.error(`[VÉGSŐ HIBA] ${status} - ${errMsg}`);
-        return res.status(status).send(`Szerver hiba (${layerName}): ${errMsg}`);
+        const errMsg = lastError ? (lastError.name === 'AbortError' ? '3.5s Timeout' : lastError.message) : 'Szerver leállt';
+        console.error(`[A FÜGGVÉNY VÉGE HIBÁVAL] Status: ${status}, Ok: ${errMsg}`);
+        return res.status(status).send(`Időtúllépés/Szerver hiba (${layerName}): ${errMsg}`);
     }
 
     const contentType = proxyResponse.headers.get('content-type');
