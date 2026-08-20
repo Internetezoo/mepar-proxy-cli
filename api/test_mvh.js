@@ -1,28 +1,86 @@
+import dns from 'dns/promises';
+import net from 'net';
+
 export default async function handler(req, res) {
-  const targetUrl = "https://mepar.mvh.allamkincstar.gov.hu/";
+  const targetHost = "mepar.mvh.allamkincstar.gov.hu";
+  const results = {};
 
+  // 1. Teszt: Külső DNS (Google 8.8.8.8) használata
   try {
-    const response = await fetch(targetUrl, {
-      method: 'GET',
-      headers: {
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-      },
-      signal: AbortSignal.timeout(10000) // 10 másodperc timeout
-    });
-
-    const html = await response.text();
-
-    // Ha visszajön valami, kiírjuk HTML-ként a böngészőbe
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    return res.status(200).send(html);
-
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-      cause: error.cause ? error.cause.message : "Ismeretlen hiba",
-      code: error.code || "Nincs kód"
-    });
+    dns.setServers(['8.8.8.8', '1.1.1.1']);
+    const customDnsLookup = await dns.lookup(targetHost);
+    results.customDns = {
+      success: true,
+      resolvedIp: customDnsLookup.address,
+      family: customDnsLookup.family
+    };
+  } catch (e) {
+    results.customDns = { success: false, error: e.message };
   }
+
+  // 2. Teszt: IPv6 cím keresése és TCP teszt az IPv6 címen
+  try {
+    const addressesV6 = await dns.resolve6(targetHost);
+    results.ipv6 = {
+      found: true,
+      addresses: addressesV6
+    };
+
+    if (addressesV6.length > 0) {
+      const ipv6TcpTest = await new Promise((resolve) => {
+        const socket = new net.Socket();
+        socket.setTimeout(6000);
+
+        socket.on('connect', () => {
+          socket.destroy();
+          resolve({ success: true, message: "IPv6 TCP kapcsolat SIKERES a 443-as porton!" });
+        });
+
+        socket.on('timeout', () => {
+          socket.destroy();
+          resolve({ success: false, error: "IPv6 TCP Timeout (ETIMEDOUT)" });
+        });
+
+        socket.on('error', (err) => {
+          socket.destroy();
+          resolve({ success: false, error: err.message, code: err.code });
+        });
+
+        // Kapcsolódás az első IPv6 címhez
+        socket.connect({ port: 443, host: addressesV6[0], family: 6 });
+      });
+
+      results.ipv6TcpTest = ipv6TcpTest;
+    }
+  } catch (e) {
+    results.ipv6 = {
+      found: false,
+      error: "A szervernek nincs IPv6 címe vagy nem érhető el: " + e.message
+    };
+  }
+
+  // 3. Teszt: Közvetlen IP alapú fetch (ha a DNS feloldotta)
+  if (results.customDns && results.customDns.success) {
+    try {
+      const startTime = Date.now();
+      // Fontos: a Host fejlécet meg kell adni az SNI (SSL tanúsítvány) miatt
+      const response = await fetch(`https://${results.customDns.resolvedIp}/`, {
+        headers: { "host": targetHost },
+        signal: AbortSignal.timeout(6000)
+      });
+      results.directIpFetch = {
+        success: true,
+        status: response.status,
+        timeMs: Date.now() - startTime
+      };
+    } catch (e) {
+      results.directIpFetch = {
+        success: false,
+        error: e.message,
+        cause: e.cause ? e.cause.message : "Ismeretlen ok"
+      };
+    }
+  }
+
+  return res.status(200).json(results);
 }
