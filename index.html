@@ -19,16 +19,16 @@
         }
         .warning { color: #d32f2f; font-weight: bold; margin-top: 2px; }
         
-        /* Jobb felső Proxy Status Panel (a rétegkezelő tetején) */
+        /* Jobb felső Proxy Status & Debug Panel */
         .proxy-status-box {
             background: #fafafa;
             border-bottom: 1px solid #ddd;
             padding: 8px 10px;
             margin: -10px -10px 10px -10px;
             border-radius: 4px 4px 0 0;
-            font-family: sans-serif;
+            font-family: monospace, sans-serif;
             font-size: 11px;
-            line-height: 1.6;
+            line-height: 1.5;
         }
 
         .status-badge {
@@ -39,10 +39,24 @@
         .status-offline { background-color: #d32f2f; }
         .status-checking { background-color: #757575; }
 
+        .debug-log {
+            color: #2e7d32;
+            font-size: 10px;
+            word-break: break-all;
+            margin-top: 4px;
+            max-height: 50px;
+            overflow-y: auto;
+            background: #f1f8e9;
+            padding: 4px;
+            border: 1px solid #c8e6c9;
+            border-radius: 3px;
+        }
+
         /* Opacity csúszkák stílusa */
         .opacity-control {
             margin-top: 4px; margin-bottom: 8px; margin-left: 20px;
             display: flex; align-items: center; gap: 8px; font-size: 11px;
+            font-family: sans-serif;
         }
         .opacity-control input[type=range] {
             width: 85px; cursor: pointer;
@@ -53,7 +67,7 @@
 
 <div id="map"></div>
 
-<!-- Bal alsó információs ablak: Zoom és HRSZ státusz -->
+<!-- Bal alsó információs ablak: Zoom és HRSZ állapota -->
 <div class="map-overlay">
     <div><b>Aktuális Zoom:</b> <span id="zoom-level">12</span></div>
     <div id="hrsz-warn" class="warning">HRSZ: Nagyítson z15 szintig!</div>
@@ -63,10 +77,10 @@
 <script>
     const PROXY = 'https://mepar-proxy-cli.vercel.app/api';
 
-    // 1. Térkép inicializálása
+    // 1. Térkép inicializálása (Magyarország közepe)
     const map = L.map('map').setView([47.16, 19.50], 12);
 
-    // 2. FIX ALAP: CartoDB Szürke (Positron)
+    // 2. ALAP RÉTEG: CartoDB Szürke (Positron)
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
         attribution: '&copy; CARTO'
     }).addTo(map);
@@ -78,13 +92,13 @@
         zIndex: 300
     });
 
-    // 4. MEPAR Réteg (SOCKS4 proxy-val szűrve a backendben)
+    // 4. MEPAR Réteg (Backendben SOCKS4-gyel szűrve)
     const meparLayer = L.tileLayer(`${PROXY}/tiles?LAYER=iier:topo10&FORMAT=image/png&TileMatrixSet=EPSG:3857&TileMatrix={z}&TileRow={y}&TileCol={x}`, {
         opacity: 0.6,
         zIndex: 200
     });
 
-    // 5. HRSZ + TELEKHATÁR Réteg (Közvetlen elérés, proxy nélkül)
+    // 5. HRSZ + TELEKHATÁR Réteg
     const hrszLayer = L.tileLayer(`${PROXY}/hrsz?z={z}&x={x}&y={y}&LAYER=hrsz:foldreszlet,hrsz:felirat_kat`, {
         minZoom: 15,
         maxZoom: 18,
@@ -102,18 +116,18 @@
 
     const layerControl = L.control.layers(null, overlays, { collapsed: false }).addTo(map);
 
-    // --- PROXY STATUS & PING MONITORING ---
+    // --- PROXY MONITORING ÉS DEBUG ABALAK ---
     let lastTileStartTime = 0;
 
-    // A Proxy kijelző doboz beágyazása a jobb felső rétegkezelő panel tetejére
     setTimeout(() => {
         const controlContainer = layerControl.getContainer();
         const proxyBox = document.createElement('div');
         proxyBox.className = 'proxy-status-box';
         proxyBox.innerHTML = `
-            <div><b>Proxy státusz:</b> <span id="proxy-status" class="status-badge status-checking">Inaktív</span></div>
-            <div><b>Aktív IP:</b> <span id="active-proxy">84.2.239.42:4153</span></div>
-            <div><b>Válaszidő (Ping):</b> <span id="proxy-ping">--</span> ms</div>
+            <div><b>Proxy Státusz:</b> <span id="proxy-status" class="status-badge status-checking">Inaktív</span></div>
+            <div><b>Aktív IP:</b> 84.2.239.42:4153</div>
+            <div><b>Válaszidő:</b> <span id="proxy-ping">--</span> ms</div>
+            <div id="debug-log-box" class="debug-log">Debug log: Várakozás kérésre...</div>
         `;
         controlContainer.insertBefore(proxyBox, controlContainer.firstChild);
     }, 50);
@@ -123,7 +137,7 @@
             lastTileStartTime = performance.now();
         });
 
-        layer.on('tileload', () => {
+        layer.on('tileload', (e) => {
             if (lastTileStartTime > 0) {
                 const duration = Math.round(performance.now() - lastTileStartTime);
                 document.getElementById('proxy-ping').innerText = duration;
@@ -131,17 +145,30 @@
                 const badge = document.getElementById('proxy-status');
                 badge.innerText = 'Online';
                 badge.className = 'status-badge status-online';
+                
+                const logBox = document.getElementById('debug-log-box');
+                logBox.innerText = `[OK] Csempe betöltve (${duration} ms)`;
+                logBox.style.color = "#2e7d32";
+                logBox.style.backgroundColor = "#f1f8e9";
+                logBox.style.borderColor = "#c8e6c9";
             }
         });
 
-        layer.on('tileerror', () => {
+        layer.on('tileerror', (e) => {
             const badge = document.getElementById('proxy-status');
             badge.innerText = 'Proxy Hiba';
             badge.className = 'status-badge status-offline';
+
+            const logBox = document.getElementById('debug-log-box');
+            logBox.style.color = "#d32f2f";
+            logBox.style.backgroundColor = "#fff0f0";
+            logBox.style.borderColor = "#ffcdd2";
+            
+            const failedUrl = e.tile.src || 'Ismeretlen URL';
+            logBox.innerText = `[HIBA] Nem sikerült a csempe letöltése!\nURL: ${failedUrl.substring(0, 40)}...\nIdő: ${new Date().toLocaleTimeString()}`;
         });
     }
 
-    // Monitoring összekötése a MEPAR réteggel
     trackProxy(meparLayer);
 
 
