@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MePAR Térkép Megjelenítő</title>
+    <title>MePAR Térkép - Átlátszóság Csúszkával</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
         html, body {
@@ -12,51 +12,78 @@
             width: 100%;
             height: 100%;
             overflow: hidden;
+            font-family: sans-serif;
         }
         #map {
             width: 100vw;
             height: 100vh;
         }
+        /* Csúszka vezérlő doboz elhelyezése a térképen */
+        .slider-container {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .slider-container label {
+            font-size: 13px;
+            font-weight: bold;
+            color: #333;
+        }
+        .slider-container input {
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
+
+    <!-- Átlátszóság állító felület -->
+    <div class="slider-container">
+        <label for="opacityRange">MePAR Átlátszóság: <span id="opacityVal">70%</span></label>
+        <input type="range" id="opacityRange" min="0" max="1" step="0.05" value="0.7">
+    </div>
+
     <div id="map"></div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        // Térkép inicializálása Magyarország közepére
+        // Térkép inicializálása
         const map = L.map('map').setView([47.1625, 19.5033], 8);
 
-        // OpenStreetMap háttérréteg
+        // 1. OpenStreetMap (Alaptérkép)
         const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
             attribution: '&copy; OpenStreetMap'
         }).addTo(map);
 
-        // MePAR Topo10 réteg (a saját Vercel backend /api/tiles végpontodon keresztül)
+        // 2. MePAR Topo10 réteg (alapból 0.7 átlátszósággal)
         const meparTopo = L.tileLayer('/api/tiles?LAYER=iier:topo10&TileMatrixSet=EPSG:3857&TileMatrix=EPSG:3857:{z}&TileRow={y}&TileCol={x}', {
             maxZoom: 19,
             tileSize: 256,
-            attribution: '&copy; MePAR / Magyar Államkincstár'
+            opacity: 0.7,
+            attribution: '&copy; MePAR'
         }).addTo(map);
 
-        // MePAR Fizikai Blokkok réteg
-        const meparBlokkok = L.tileLayer('/api/tiles?LAYER=iier:fizikai_blokk&TileMatrixSet=EPSG:3857&TileMatrix=EPSG:3857:{z}&TileRow={y}&TileCol={x}', {
-            maxZoom: 19,
-            tileSize: 256,
-            transparent: true
+        // Csúszka eseménykezelője (dinamikus átlátszóság állítás)
+        const slider = document.getElementById('opacityRange');
+        const opacityValDisplay = document.getElementById('opacityVal');
+
+        slider.addEventListener('input', function(e) {
+            const value = parseFloat(e.target.value);
+            meparTopo.setOpacity(value);
+            opacityValDisplay.textContent = Math.round(value * 100) + '%';
         });
 
-        // Rétegválasztó doboz a térkép jobb felső sarkában
-        const baseMaps = {
-            "OpenStreetMap": osm
-        };
-
-        const overlayMaps = {
-            "MePAR Topo10": meparTopo,
-            "MePAR Fizikai Blokkok": meparBlokkok
-        };
-
+        // Rétegválasztó
+        const baseMaps = { "OpenStreetMap": osm };
+        const overlayMaps = { "MePAR Topo10": meparTopo };
         L.control.layers(baseMaps, overlayMaps).addTo(map);
     </script>
 </body>
